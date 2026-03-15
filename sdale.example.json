@@ -1,0 +1,14 @@
+{
+  "dales": {
+    "edge": {
+      "host": "203.0.113.10",
+      "user": "deploy",
+      "key": "~/.ssh/sdale",
+      "session": "work"
+    }
+  },
+  "defaults": {
+    "key": "~/.ssh/sdale",
+    "exclude": ["node_modules", ".git"]
+  }
+}
