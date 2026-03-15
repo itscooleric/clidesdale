@@ -2,32 +2,28 @@
 
 ```text
 
-   ██████ ██      ██ ██████  ███████
-  ██      ██      ██ ██   ██ ██
-  ██      ██      ██ ██   ██ █████    ───
-  ██      ██      ██ ██   ██ ██        \
-   ██████ ███████ ██ ██████  ███████    \    ╱▔▔▔╲
-                                        ╲__╱ ● ● ╲
-  ███████ ██████   █████  ██      ███████   │  ▽  │
-  ██      ██   ██ ██   ██ ██      ██         ╲───╱
-  ███████ ██   ██ ███████ ██      █████      ╱   ╲
-       ██ ██   ██ ██   ██ ██      ██        ╱ ┃ ┃ ╲
-  ███████ ██████  ██   ██ ███████ ███████  ╱  ┃ ┃  ╲
+   ██████ ██      ██ ██████  ███████ ██ ███████
+  ██      ██      ██ ██   ██ ██      ██ ██
+  ██      ██      ██ ██   ██ █████   ██ ███████   ───
+  ██      ██      ██ ██   ██ ██         ██          \
+   ██████ ███████ ██ ██████  ███████    ███████      \    ╱▔▔▔╲
+                                                      ╲__╱ ● ● ╲
+  ██████   █████  ██      ███████                        │  ▽  │
+  ██   ██ ██   ██ ██      ██                              ╲───╱
+  ██   ██ ███████ ██      █████                           ╱   ╲
+  ██   ██ ██   ██ ██      ██                             ╱ ┃ ┃ ╲
+  ██████  ██   ██ ███████ ███████                       ╱  ┃ ┃  ╲
 
-  give your agent a VPS                    v0.1
-  ─────────────────────────────────────────────────
-  
-  agent (clide) ── SSH ──► throwaway VPS
-       │                        │
-       ▼                        ▼
-  write code              build, test, deploy
-  run local tests         break things freely
-       │                        │
-       ▼                        ▼
-  tmux co-dev ◄──────────► human watches
+  give your agent a VPS                          v0.1
+  ────────────────────────────────────────────────────
 
-  ─────────────────────────────────────────────────
-  dale! 🐴
+  sdale connect edge
+  sdale run edge "docker build -t app ."
+  sdale output edge
+  sdale sync edge ./src /srv/app
+
+  ────────────────────────────────────────────────────
+  python 3.10+  ·  zero dependencies  ·  dale! 🐴
 ```
 
 Give your AI agent SSH access to a disposable VPS. It builds, tests, deploys, and breaks things — you watch via tmux. Dale!
@@ -42,7 +38,7 @@ AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/c
 
 ```
 ┌──────────────┐     SSH (ed25519)     ┌──────────────────┐
-│  agent        │ ────────────────────▶ │  throwaway VPS   │
+│  agent        │ ────────────────────▶ │  dale (VPS)      │
 │  (sandboxed)  │                       │                  │
 │               │  rsync code ────────▶ │  docker build    │
 │  write code   │                       │  docker run      │
@@ -60,6 +56,16 @@ AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/c
 2. **Rsync, don't clone** — code lives in the agent's sandbox. Sync it to the VPS for builds. Single source of truth.
 3. **The VPS is disposable** — if the agent bricks it, reprovision. Keep provisioning scripted and repeatable.
 4. **SSH key per agent** — each agent gets its own key pair. Revoke by removing the pubkey.
+
+## Install
+
+```bash
+pip install .
+# or run directly:
+python -m sdale
+```
+
+Requires Python 3.10+. Zero external dependencies — stdlib only.
 
 ## Quick start
 
@@ -81,62 +87,79 @@ ssh-keygen -t ed25519 -f ~/.ssh/sdale -N "" -C "agent-sdale"
 
 Add the pubkey to the VPS:
 ```bash
-ssh-copy-id -i ~/.ssh/sdale.pub user@vps-ip
+ssh-copy-id -i ~/.ssh/sdale.pub deploy@vps-ip
 ```
 
 ### 3. Configure `sdale.json`
 
 ```json
 {
-  "targets": {
+  "dales": {
     "edge": {
-      "host": "66.179.138.11",
-      "user": "eric",
+      "host": "203.0.113.10",
+      "user": "deploy",
       "key": "~/.ssh/sdale",
-      "session": "sdale"
+      "session": "build"
     }
+  },
+  "defaults": {
+    "key": "~/.ssh/sdale",
+    "exclude": ["node_modules", ".git"]
   }
 }
 ```
 
-### 4. Go
+See [`sdale.example.json`](sdale.example.json) for the full format.
+
+### 4. Dale!
 
 ```bash
-# Agent creates a co-dev session
+# Connect to a dale (creates tmux session)
 sdale connect edge
 
-# Agent runs commands (human watches in tmux)
-sdale run edge "docker build -t myapp ."
-sdale run edge "docker run --rm myapp npm test"
+# Run commands (human watches in tmux)
+sdale run edge "docker build -t app ."
+sdale run edge "docker run --rm app npm test"
 
-# Agent syncs code to VPS
-sdale sync edge ./my-project /tmp/build
+# Read output
+sdale output edge
 
-# Human attaches
-ssh eric@66.179.138.11 -t "tmux attach -t sdale"
+# Sync code to the dale
+sdale sync edge ./my-project /srv/app
+
+# Check status
+sdale status edge
+
+# View audit log
+sdale log edge
+
+# Human attaches from their terminal
+ssh deploy@vps-ip -t "tmux attach -t build"
 ```
 
-## Co-dev tmux workflow
+## CLI reference
 
-**Agent creates/reuses session:**
-```bash
-ssh -i ~/.ssh/sdale user@host "tmux new-session -d -s sdale 'bash' 2>/dev/null || true"
+| Command | Description |
+|---------|-------------|
+| `sdale connect <dale>` | Create/reuse tmux session on a dale |
+| `sdale run <dale> "<cmd>"` | Send a command to the dale's tmux session |
+| `sdale output <dale> [-n N]` | Capture recent tmux pane output (default: 20 lines) |
+| `sdale sync <dale> <src> [dst]` | Rsync local directory to the dale |
+| `sdale status [dale]` | Show dale status (or list all) |
+| `sdale list` | List configured dales |
+| `sdale log <dale> [--full\|--since DUR]` | Show event log for a dale |
+| `sdale disconnect <dale>` | Kill the tmux session |
+
+## Logging
+
+Every command is logged as structured JSONL to `~/.sdale/logs/<dale>/events.jsonl`, compatible with the [clide session event schema v1](https://github.com/itscooleric/clide/blob/main/docs/schema/session-events-v1.md).
+
+```json
+{"event":"dale_run","ts":"2026-03-15T04:30:12Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","command":"docker build -t app ."}
+{"event":"dale_sync","ts":"2026-03-15T04:31:02Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","src":"./app","dst":"/srv/app","files":"14"}
 ```
 
-**Agent sends commands into it:**
-```bash
-ssh -i ~/.ssh/sdale user@host "tmux send-keys -t sdale 'your-command' Enter"
-```
-
-**Agent reads output:**
-```bash
-ssh -i ~/.ssh/sdale user@host "tmux capture-pane -t sdale -p | tail -20"
-```
-
-**Human watches:**
-```bash
-ssh user@host -t "tmux attach -t sdale"
-```
+Secret values (API keys, tokens) are automatically scrubbed before writing.
 
 ## Roadmap
 
