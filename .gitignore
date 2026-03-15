@@ -1,0 +1,8 @@
+sdale.json
+*.log
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.sdale/

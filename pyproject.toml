@@ -1,0 +1,16 @@
+[project]
+name = "clide-sdale"
+version = "0.1.0"
+description = "Give your agent a VPS. tmux co-dev, rsync+build loops, disposable infrastructure."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+# Zero dependencies — stdlib only
+dependencies = []
+
+[project.scripts]
+sdale = "sdale.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

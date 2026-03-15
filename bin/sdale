@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""sdale CLI entry point."""
+
+from sdale.cli import main
+
+main()
