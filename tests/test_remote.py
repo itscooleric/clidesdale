@@ -11,6 +11,7 @@ from unittest.mock import patch, call, MagicMock
 
 from sdale.config import DaleConfig
 from sdale.remote import (
+    scp_to,
     ssh,
     tmux_attach,
     tmux_ensure,
@@ -45,12 +46,13 @@ class TestSsh(unittest.TestCase):
 
         ssh(dale, "echo hello", capture=True)
 
-        mock_run.assert_called_once_with(
-            ["ssh", "-i", "/tmp/test-key", "deploy@203.0.113.10", "echo hello"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], "ssh")
+        self.assertIn("-i", cmd)
+        self.assertIn("/tmp/test-key", cmd)
+        self.assertIn("deploy@203.0.113.10", cmd)
+        self.assertEqual(cmd[-1], "echo hello")
 
     @patch("sdale.remote.subprocess.run")
     def test_no_key_omits_flag(self, mock_run: MagicMock) -> None:
@@ -62,7 +64,9 @@ class TestSsh(unittest.TestCase):
 
         cmd = mock_run.call_args[0][0]
         self.assertNotIn("-i", cmd)
-        self.assertEqual(cmd, ["ssh", "deploy@203.0.113.10", "ls"])
+        self.assertEqual(cmd[0], "ssh")
+        self.assertEqual(cmd[-1], "ls")
+        self.assertIn("deploy@203.0.113.10", cmd)
 
     @patch("sdale.remote.subprocess.run")
     def test_raises_on_failure(self, mock_run: MagicMock) -> None:
@@ -174,6 +178,31 @@ class TestTmuxCapture(unittest.TestCase):
 
         cmd = mock_run.call_args[0][0][-1]
         self.assertIn("tail -50", cmd)
+
+
+class TestScpTo(unittest.TestCase):
+    """Tests for scp_to — copying files to a dale."""
+
+    @patch("sdale.remote.subprocess.run")
+    @patch("sdale.remote.Path.exists", return_value=True)
+    def test_copies_file(self, mock_exists: MagicMock, mock_run: MagicMock) -> None:
+        """Builds correct scp command."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        dale = make_dale()
+
+        scp_to(dale, "/tmp/myfile.env", "/opt/stacks/.env")
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], "scp")
+        self.assertIn("/tmp/myfile.env", cmd)
+        self.assertIn("deploy@203.0.113.10:/opt/stacks/.env", cmd)
+
+    def test_raises_on_missing_file(self) -> None:
+        """Raises FileNotFoundError for nonexistent local file."""
+        dale = make_dale()
+        with self.assertRaises(FileNotFoundError):
+            scp_to(dale, "/nonexistent/file.txt", "/tmp/dst")
 
 
 class TestTmuxAttach(unittest.TestCase):

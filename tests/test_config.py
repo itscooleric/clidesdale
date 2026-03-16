@@ -43,12 +43,17 @@ class TestDaleConfig(unittest.TestCase):
     def test_ssh_args_with_key(self) -> None:
         """ssh_args includes -i flag when a key is configured."""
         dale = DaleConfig(name="edge", host="203.0.113.10", key="/tmp/test-key")
-        self.assertEqual(dale.ssh_args, ["-i", "/tmp/test-key"])
+        args = dale.ssh_args
+        self.assertIn("-i", args)
+        self.assertIn("/tmp/test-key", args)
+        self.assertIn("StrictHostKeyChecking=accept-new", " ".join(args))
 
     def test_ssh_args_without_key(self) -> None:
-        """ssh_args is empty when no key is configured."""
+        """ssh_args omits -i when no key is configured."""
         dale = DaleConfig(name="edge", host="203.0.113.10")
-        self.assertEqual(dale.ssh_args, [])
+        args = dale.ssh_args
+        self.assertNotIn("-i", args)
+        self.assertIn("StrictHostKeyChecking=accept-new", " ".join(args))
 
     def test_key_tilde_expansion(self) -> None:
         """Tilde in key path is expanded to home directory."""

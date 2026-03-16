@@ -7,6 +7,8 @@ remote execution, and event logging.
 Usage:
     sdale connect <dale>
     sdale watch <dale>
+    sdale exec <dale> "<command>"
+    sdale push <dale> <local-file> <remote-path>
     sdale run <dale> "<command>"
     sdale output <dale> [--lines N]
     sdale sync <dale> <src> [dst]
@@ -28,6 +30,8 @@ from .config import DaleConfig, get_dale, list_dales, find_config_path
 from .logger import EventLogger
 from .remote import (
     rsync,
+    scp_to,
+    ssh,
     tmux_attach,
     tmux_capture,
     tmux_ensure,
@@ -87,6 +91,49 @@ def cmd_watch(args: argparse.Namespace) -> None:
     print(f"  Detach with: Ctrl-b d")
     print()
     tmux_attach(dale)
+
+
+def cmd_exec(args: argparse.Namespace) -> None:
+    """Run a command on the dale via direct SSH (no tmux).
+
+    Unlike `run`, this captures stdout/stderr directly and returns
+    the exit code. Use this for scripting, automation, or any command
+    with complex quoting that tmux send-keys would mangle.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    command = args.command
+
+    try:
+        result = ssh(dale, command, capture=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        logger.log("dale_exec", command=command, exit_code="0")
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
+        logger.log("dale_exec", command=command, exit_code=str(exc.returncode))
+        sys.exit(exc.returncode)
+
+
+def cmd_push(args: argparse.Namespace) -> None:
+    """Copy a local file to the dale via scp.
+
+    Useful for deploying config files (.env, etc.) without needing
+    to set up a full rsync directory sync.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    src = args.src
+    dst = args.dst
+
+    scp_to(dale, src, dst)
+    logger.log("dale_push", src=src, dst=dst)
+    info(f"Pushed {src} → {dale.name}:{dst}")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -295,6 +342,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("watch", help="Attach to the dale's tmux session (live view)")
     p.add_argument("dale", help="Dale name from sdale.json")
 
+    # exec
+    p = sub.add_parser("exec", help="Run a command via direct SSH (no tmux)")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("command", help="Command to run (quote it)")
+
+    # push
+    p = sub.add_parser("push", help="Copy a local file to the dale via scp")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("src", help="Local file path")
+    p.add_argument("dst", help="Remote destination path")
+
     # run
     p = sub.add_parser("run", help="Send a command to the dale's tmux session")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -351,6 +409,8 @@ def main() -> None:
     commands = {
         "connect": cmd_connect,
         "watch": cmd_watch,
+        "exec": cmd_exec,
+        "push": cmd_push,
         "run": cmd_run,
         "output": cmd_output,
         "sync": cmd_sync,

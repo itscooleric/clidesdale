@@ -6,17 +6,39 @@ All remote commands go through tmux sessions for co-dev observability.
 
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 from .config import DaleConfig
 
 
-def ssh(dale: DaleConfig, command: str, capture: bool = False) -> subprocess.CompletedProcess:
+def _known_hosts_path() -> Path:
+    """Return the path to sdale's known_hosts file."""
+    p = Path.home() / ".config" / "sdale"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "known_hosts"
+
+
+def _ensure_host_known(dale: DaleConfig) -> None:
+    """Add the dale's host key to sdale's known_hosts if not already present.
+
+    Uses StrictHostKeyChecking=accept-new in ssh_args instead of
+    ssh-keyscan, so no separate subprocess call is needed. This
+    function just ensures the known_hosts file directory exists.
+    """
+    kh = _known_hosts_path()
+    kh.parent.mkdir(parents=True, exist_ok=True)
+
+
+def ssh(dale: DaleConfig, command: str, capture: bool = False,
+        stdin_data: str | None = None) -> subprocess.CompletedProcess:
     """Run a command on the dale via SSH.
 
     Args:
-        dale:    The dale configuration.
-        command: The remote command string to execute.
-        capture: If True, capture stdout/stderr. If False, inherit terminal.
+        dale:       The dale configuration.
+        command:    The remote command string to execute.
+        capture:    If True, capture stdout/stderr. If False, inherit terminal.
+        stdin_data: If provided, pipe this string to stdin of the remote command.
 
     Returns:
         The CompletedProcess result.
@@ -24,13 +46,35 @@ def ssh(dale: DaleConfig, command: str, capture: bool = False) -> subprocess.Com
     Raises:
         subprocess.CalledProcessError: If the SSH command fails.
     """
+    _ensure_host_known(dale)
     cmd = ["ssh", *dale.ssh_args, dale.ssh_dest, command]
     return subprocess.run(
         cmd,
         capture_output=capture,
         text=True,
         check=True,
+        input=stdin_data,
     )
+
+
+def scp_to(dale: DaleConfig, local_path: str, remote_path: str) -> None:
+    """Copy a local file to the dale via scp.
+
+    Args:
+        dale:        The dale configuration.
+        local_path:  Path to the local file.
+        remote_path: Destination path on the dale.
+
+    Raises:
+        FileNotFoundError: If the local file doesn't exist.
+        subprocess.CalledProcessError: If scp fails.
+    """
+    if not Path(local_path).exists():
+        raise FileNotFoundError(f"Local file not found: {local_path}")
+
+    _ensure_host_known(dale)
+    cmd = ["scp", *dale.ssh_args, local_path, f"{dale.ssh_dest}:{remote_path}"]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 def tmux_ensure(dale: DaleConfig) -> None:

@@ -37,6 +37,21 @@ class TestBuildParser(unittest.TestCase):
         self.assertEqual(args.subcmd, "watch")
         self.assertEqual(args.dale, "edge")
 
+    def test_exec_subcommand(self) -> None:
+        """'exec' subcommand parses dale name and command."""
+        args = self.parser.parse_args(["exec", "edge", "docker ps"])
+        self.assertEqual(args.subcmd, "exec")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.command, "docker ps")
+
+    def test_push_subcommand(self) -> None:
+        """'push' subcommand parses dale, src, and dst."""
+        args = self.parser.parse_args(["push", "edge", ".env", "/opt/stacks/clem/.env"])
+        self.assertEqual(args.subcmd, "push")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.src, ".env")
+        self.assertEqual(args.dst, "/opt/stacks/clem/.env")
+
     def test_run_subcommand(self) -> None:
         """'run' subcommand parses dale name and command."""
         args = self.parser.parse_args(["run", "edge", "docker build ."])
