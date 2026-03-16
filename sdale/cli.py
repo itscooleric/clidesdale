@@ -38,6 +38,7 @@ from .remote import (
     tmux_has_session,
     tmux_kill,
     tmux_send,
+    tmux_send_wait,
 )
 
 
@@ -142,15 +143,23 @@ def cmd_run(args: argparse.Namespace) -> None:
     The command is sent as keystrokes, so it appears in the tmux
     session exactly as if someone typed it. The human watching
     the session sees everything in real time.
+
+    With --wait, blocks until the command finishes and prints output.
     """
     dale = get_dale(args.dale)
     logger = EventLogger(dale.name)
     command = args.command
 
-    tmux_send(dale, command)
-
-    logger.log("dale_run", command=command)
-    info(f"[{dale.name}] $ {command}")
+    if args.wait:
+        info(f"[{dale.name}] $ {command}")
+        timeout = args.timeout
+        output = tmux_send_wait(dale, command, timeout=timeout)
+        print(output, end="")
+        logger.log("dale_run", command=command, wait="true")
+    else:
+        tmux_send(dale, command)
+        logger.log("dale_run", command=command)
+        info(f"[{dale.name}] $ {command}")
 
 
 def cmd_output(args: argparse.Namespace) -> None:
@@ -357,6 +366,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="Send a command to the dale's tmux session")
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("command", help="Command to run (quote it)")
+    p.add_argument("--wait", "-w", action="store_true", help="Wait for command to finish and print output")
+    p.add_argument("--timeout", "-t", type=int, default=300, help="Timeout in seconds for --wait (default: 300)")
 
     # output
     p = sub.add_parser("output", help="Capture recent tmux pane output")

@@ -58,6 +58,19 @@ class TestBuildParser(unittest.TestCase):
         self.assertEqual(args.subcmd, "run")
         self.assertEqual(args.dale, "edge")
         self.assertEqual(args.command, "docker build .")
+        self.assertFalse(args.wait)
+
+    def test_run_wait_flag(self) -> None:
+        """'run --wait' sets wait=True."""
+        args = self.parser.parse_args(["run", "--wait", "edge", "docker build ."])
+        self.assertTrue(args.wait)
+        self.assertEqual(args.timeout, 300)
+
+    def test_run_wait_short_flag(self) -> None:
+        """'run -w -t 60' sets wait and custom timeout."""
+        args = self.parser.parse_args(["run", "-w", "-t", "60", "edge", "make build"])
+        self.assertTrue(args.wait)
+        self.assertEqual(args.timeout, 60)
 
     def test_output_defaults(self) -> None:
         """'output' subcommand defaults to 20 lines."""

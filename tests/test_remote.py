@@ -14,11 +14,12 @@ from sdale.remote import (
     scp_to,
     ssh,
     tmux_attach,
+    tmux_capture,
     tmux_ensure,
     tmux_has_session,
-    tmux_send,
-    tmux_capture,
     tmux_kill,
+    tmux_send,
+    tmux_send_wait,
 )
 
 
@@ -178,6 +179,49 @@ class TestTmuxCapture(unittest.TestCase):
 
         cmd = mock_run.call_args[0][0][-1]
         self.assertIn("tail -50", cmd)
+
+
+class TestTmuxSendWait(unittest.TestCase):
+    """Tests for tmux_send_wait — send command and wait for completion."""
+
+    @patch("sdale.remote.time.sleep")
+    @patch("sdale.remote.subprocess.run")
+    def test_returns_output_on_marker(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
+        """Returns command output when marker is detected."""
+        dale = make_dale(session="work")
+
+        # First calls: has-session check + send-keys (from tmux_send)
+        # Then: capture-pane poll returns output with marker
+        def side_effect(*args, **kwargs):
+            cmd = args[0]
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if "capture-pane" in cmd_str:
+                # Simulate output with marker
+                return subprocess.CompletedProcess([], 0,
+                    stdout="$ hostname ; echo SDabcd12\nforge-edge\nSDabcd12\n$\n")
+            return subprocess.CompletedProcess([], 0, stdout="")
+
+        mock_run.side_effect = side_effect
+
+        # Patch secrets.token_hex to return predictable value
+        with patch("sdale.remote.secrets.token_hex", return_value="abcd12"):
+            output = tmux_send_wait(dale, "hostname", timeout=10, interval=0.1)
+
+        self.assertIn("forge-edge", output)
+
+    @patch("sdale.remote.time.sleep")
+    @patch("sdale.remote.time.monotonic")
+    @patch("sdale.remote.subprocess.run")
+    def test_raises_on_timeout(self, mock_run: MagicMock, mock_mono: MagicMock, mock_sleep: MagicMock) -> None:
+        """Raises RuntimeError when command doesn't finish in time."""
+        dale = make_dale()
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="still running...\n")
+        # Simulate time passing beyond timeout
+        mock_mono.side_effect = [0, 0, 5, 10, 20]
+
+        with self.assertRaises(RuntimeError) as ctx:
+            tmux_send_wait(dale, "sleep 999", timeout=10, interval=1)
+        self.assertIn("Timed out", str(ctx.exception))
 
 
 class TestScpTo(unittest.TestCase):

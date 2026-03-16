@@ -5,8 +5,10 @@ All remote commands go through tmux sessions for co-dev observability.
 """
 
 import os
+import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .config import DaleConfig
@@ -128,6 +130,78 @@ def tmux_send(dale: DaleConfig, command: str) -> None:
     # Escape single quotes in the command for the outer SSH shell
     escaped = command.replace("'", "'\\''")
     ssh(dale, f"tmux send-keys -t '{dale.session}' '{escaped}' Enter", capture=True)
+
+
+def tmux_send_wait(dale: DaleConfig, command: str,
+                   timeout: int = 300, interval: float = 2.0) -> str:
+    """Send a command to the dale's tmux session and wait for it to finish.
+
+    Appends a unique marker after the command, then polls tmux
+    capture-pane until the marker appears in the output. Returns
+    the output between the command and the marker.
+
+    The command is still visible in tmux (co-dev friendly) but
+    the caller blocks until completion — no blind sleep needed.
+
+    Args:
+        dale:     The dale configuration.
+        command:  The command string to send.
+        timeout:  Max seconds to wait (default: 300 = 5 min).
+        interval: Seconds between polls (default: 2).
+
+    Returns:
+        The captured output from the command.
+
+    Raises:
+        RuntimeError: If no tmux session or timeout exceeded.
+    """
+    marker = f"SD{secrets.token_hex(3)}"
+
+    # Send the command followed by an echo of the marker
+    full_cmd = f"{command} ; echo {marker}"
+    tmux_send(dale, full_cmd)
+
+    # Poll until marker appears
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        output = tmux_capture(dale, lines=200)
+        if marker in output:
+            # Extract output between command and marker.
+            # The tmux pane shows: <prompt>command ; echo MARKER\n<output>\nMARKER
+            # We want everything between the command line and the marker line.
+            lines_list = output.splitlines()
+            marker_idx = None
+            cmd_idx = None
+            for i, line in enumerate(lines_list):
+                stripped = line.strip()
+                if stripped == marker:
+                    # This is the marker output line (exact match)
+                    marker_idx = i
+                elif marker in line:
+                    # This is the command line containing "echo MARKER"
+                    cmd_idx = i
+            # If we found the marker output but not a separate command line,
+            # look for any line containing the original command
+            if cmd_idx is None:
+                for i, line in enumerate(lines_list):
+                    if command in line:
+                        cmd_idx = i
+                        break
+            if cmd_idx is not None and marker_idx is not None and marker_idx > cmd_idx:
+                result_lines = lines_list[cmd_idx + 1:marker_idx]
+                return "\n".join(result_lines) + "\n" if result_lines else ""
+            # Fallback: return everything before the marker
+            if marker_idx is not None:
+                result_lines = [l for l in lines_list[:marker_idx]
+                                if marker not in l and command not in l]
+                return "\n".join(result_lines) + "\n" if result_lines else ""
+            return output
+
+    raise RuntimeError(
+        f"Timed out after {timeout}s waiting for command to finish on {dale.name}. "
+        f"The command may still be running in tmux session '{dale.session}'."
+    )
 
 
 def tmux_capture(dale: DaleConfig, lines: int = 20) -> str:
