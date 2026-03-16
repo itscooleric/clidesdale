@@ -55,6 +55,41 @@ def err(msg: str) -> None:
     print(f"sdale: {msg}", file=sys.stderr)
 
 
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _install_watch_helper(dale: DaleConfig) -> None:
+    """Install a watch-<session> shell function on the remote host.
+
+    Creates /etc/profile.d/sdale-watch.sh so all users (including inside
+    Docker containers that mount /etc/profile.d) get watch functions
+    that handle tmux nesting gracefully.
+    """
+    session = dale.session
+    func_name = f"watch-{session}"
+    marker = f"# sdale-watch:{session}"
+
+    # Check if already installed
+    try:
+        result = ssh(dale, f"grep -q '{marker}' /etc/profile.d/sdale-watch.sh 2>/dev/null && echo exists || echo missing", capture=True)
+        if "exists" in result.stdout:
+            return
+    except subprocess.CalledProcessError:
+        pass
+
+    # Append the function (creates file if needed, needs sudo)
+    script = (
+        f'{marker}\n'
+        f'{func_name}() {{ TMUX="" tmux attach -t {session}; }}\n'
+    )
+    try:
+        ssh(dale, f"echo '{script}' | sudo tee -a /etc/profile.d/sdale-watch.sh > /dev/null && "
+            f"sudo chmod +r /etc/profile.d/sdale-watch.sh",
+            capture=True)
+    except subprocess.CalledProcessError:
+        pass  # best effort — may not have sudo
+
+
 # ── Subcommands ──────────────────────────────────────────────────────
 
 
@@ -62,7 +97,8 @@ def cmd_connect(args: argparse.Namespace) -> None:
     """Create or reuse a tmux session on a dale.
 
     If the tmux session already exists, this is a no-op.
-    Prints the attach command so the human knows how to watch.
+    Installs a watch-<session> shell function on the remote so users
+    can attach from inside nested tmux (e.g. clide's ttyd).
     """
     dale = get_dale(args.dale)
     logger = EventLogger(dale.name)
@@ -70,9 +106,13 @@ def cmd_connect(args: argparse.Namespace) -> None:
     info(f"Connecting to dale '{dale.name}' ({dale.ssh_dest})...")
     tmux_ensure(dale)
 
+    # Install a watch helper on the remote so nested tmux attach works
+    _install_watch_helper(dale)
+
     logger.log("dale_connect", tmux_session=dale.session, host=dale.host)
     info(f"tmux session '{dale.session}' ready")
     info(f"Watch with: sdale watch {dale.name}  (Ctrl-b d to detach)")
+    info(f"From nested tmux: watch-{dale.session}")
 
 
 def cmd_watch(args: argparse.Namespace) -> None:
