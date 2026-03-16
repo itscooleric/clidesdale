@@ -5,8 +5,6 @@ All remote commands go through tmux sessions for co-dev observability.
 """
 
 import subprocess
-import sys
-from typing import Optional
 
 from .config import DaleConfig
 

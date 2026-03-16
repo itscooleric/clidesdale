@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -349,5 +350,22 @@ def main() -> None:
     except RuntimeError as exc:
         err(str(exc))
         sys.exit(1)
+    except ValueError as exc:
+        err(str(exc))
+        sys.exit(1)
+    except subprocess.CalledProcessError as exc:
+        # Friendly SSH/rsync error messages
+        cmd_name = Path(exc.cmd[0]).name if exc.cmd else "command"
+        if cmd_name == "ssh":
+            err(f"SSH connection failed (exit {exc.returncode}). Is the dale reachable?")
+            if exc.stderr:
+                err(exc.stderr.strip())
+        elif cmd_name == "rsync":
+            err(f"Rsync failed (exit {exc.returncode}).")
+            if exc.stderr:
+                err(exc.stderr.strip())
+        else:
+            err(f"{cmd_name} failed (exit {exc.returncode})")
+        sys.exit(exc.returncode)
     except KeyboardInterrupt:
         sys.exit(130)
