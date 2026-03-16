@@ -31,6 +31,12 @@ class TestBuildParser(unittest.TestCase):
         self.assertEqual(args.subcmd, "connect")
         self.assertEqual(args.dale, "edge")
 
+    def test_watch_subcommand(self) -> None:
+        """'watch' subcommand parses dale name."""
+        args = self.parser.parse_args(["watch", "edge"])
+        self.assertEqual(args.subcmd, "watch")
+        self.assertEqual(args.dale, "edge")
+
     def test_run_subcommand(self) -> None:
         """'run' subcommand parses dale name and command."""
         args = self.parser.parse_args(["run", "edge", "docker build ."])

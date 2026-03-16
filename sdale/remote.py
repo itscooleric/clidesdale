@@ -4,6 +4,7 @@ Wraps SSH and rsync commands for interacting with dales.
 All remote commands go through tmux sessions for co-dev observability.
 """
 
+import os
 import subprocess
 
 from .config import DaleConfig
@@ -101,6 +102,31 @@ def tmux_capture(dale: DaleConfig, lines: int = 20) -> str:
         capture=True,
     )
     return result.stdout
+
+
+def tmux_attach(dale: DaleConfig) -> None:
+    """Attach to the dale's tmux session interactively.
+
+    This gives the user a live view of the tmux session where sdale
+    sends commands. The user sees everything in real time and can
+    even type (though the session is meant for observation).
+
+    Replaces the current process with an interactive SSH + tmux attach.
+
+    Args:
+        dale: The dale configuration.
+
+    Raises:
+        RuntimeError: If no tmux session exists on the dale.
+    """
+    if not tmux_has_session(dale):
+        raise RuntimeError(
+            f"No tmux session '{dale.session}' on {dale.name}. "
+            f"Run 'sdale connect {dale.name}' first."
+        )
+    cmd = ["ssh", *dale.ssh_args, "-t", dale.ssh_dest,
+           f"tmux attach -t '{dale.session}'"]
+    os.execvp("ssh", cmd)
 
 
 def tmux_kill(dale: DaleConfig) -> bool:

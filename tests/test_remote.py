@@ -12,6 +12,7 @@ from unittest.mock import patch, call, MagicMock
 from sdale.config import DaleConfig
 from sdale.remote import (
     ssh,
+    tmux_attach,
     tmux_ensure,
     tmux_has_session,
     tmux_send,
@@ -173,6 +174,35 @@ class TestTmuxCapture(unittest.TestCase):
 
         cmd = mock_run.call_args[0][0][-1]
         self.assertIn("tail -50", cmd)
+
+
+class TestTmuxAttach(unittest.TestCase):
+    """Tests for tmux_attach — attaching to tmux sessions."""
+
+    @patch("sdale.remote.os.execvp")
+    @patch("sdale.remote.subprocess.run")
+    def test_attaches_to_session(self, mock_run: MagicMock, mock_exec: MagicMock) -> None:
+        """Calls execvp with the correct ssh + tmux attach command."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="")
+        dale = make_dale(session="work")
+
+        tmux_attach(dale)
+
+        mock_exec.assert_called_once()
+        cmd = mock_exec.call_args[0][1]
+        self.assertEqual(cmd[0], "ssh")
+        self.assertIn("-t", cmd)
+        self.assertIn("tmux attach -t 'work'", cmd[-1])
+
+    @patch("sdale.remote.subprocess.run")
+    def test_raises_when_no_session(self, mock_run: MagicMock) -> None:
+        """Raises RuntimeError when no tmux session exists."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, "ssh")
+        dale = make_dale()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            tmux_attach(dale, )
+        self.assertIn("No tmux session", str(ctx.exception))
 
 
 class TestTmuxKill(unittest.TestCase):
