@@ -52,9 +52,13 @@ class DaleConfig:
     @property
     def ssh_args(self) -> list[str]:
         """Build the base SSH argument list including the key flag."""
-        args = []
+        args = ["-o", "StrictHostKeyChecking=accept-new"]
         if self.key:
             args.extend(["-i", self.key])
+        # Use sdale's own known_hosts file
+        kh = Path.home() / ".config" / "sdale" / "known_hosts"
+        if kh.exists():
+            args.extend(["-o", f"UserKnownHostsFile={kh}"])
         return args
 
 

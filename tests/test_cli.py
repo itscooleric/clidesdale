@@ -37,12 +37,40 @@ class TestBuildParser(unittest.TestCase):
         self.assertEqual(args.subcmd, "watch")
         self.assertEqual(args.dale, "edge")
 
+    def test_exec_subcommand(self) -> None:
+        """'exec' subcommand parses dale name and command."""
+        args = self.parser.parse_args(["exec", "edge", "docker ps"])
+        self.assertEqual(args.subcmd, "exec")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.command, "docker ps")
+
+    def test_push_subcommand(self) -> None:
+        """'push' subcommand parses dale, src, and dst."""
+        args = self.parser.parse_args(["push", "edge", ".env", "/opt/stacks/clem/.env"])
+        self.assertEqual(args.subcmd, "push")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.src, ".env")
+        self.assertEqual(args.dst, "/opt/stacks/clem/.env")
+
     def test_run_subcommand(self) -> None:
         """'run' subcommand parses dale name and command."""
         args = self.parser.parse_args(["run", "edge", "docker build ."])
         self.assertEqual(args.subcmd, "run")
         self.assertEqual(args.dale, "edge")
         self.assertEqual(args.command, "docker build .")
+        self.assertFalse(args.wait)
+
+    def test_run_wait_flag(self) -> None:
+        """'run --wait' sets wait=True."""
+        args = self.parser.parse_args(["run", "--wait", "edge", "docker build ."])
+        self.assertTrue(args.wait)
+        self.assertEqual(args.timeout, 300)
+
+    def test_run_wait_short_flag(self) -> None:
+        """'run -w -t 60' sets wait and custom timeout."""
+        args = self.parser.parse_args(["run", "-w", "-t", "60", "edge", "make build"])
+        self.assertTrue(args.wait)
+        self.assertEqual(args.timeout, 60)
 
     def test_output_defaults(self) -> None:
         """'output' subcommand defaults to 20 lines."""
