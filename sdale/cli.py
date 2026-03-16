@@ -6,6 +6,7 @@ remote execution, and event logging.
 
 Usage:
     sdale connect <dale>
+    sdale watch <dale>
     sdale run <dale> "<command>"
     sdale output <dale> [--lines N]
     sdale sync <dale> <src> [dst]
@@ -27,6 +28,7 @@ from .config import DaleConfig, get_dale, list_dales, find_config_path
 from .logger import EventLogger
 from .remote import (
     rsync,
+    tmux_attach,
     tmux_capture,
     tmux_ensure,
     tmux_has_session,
@@ -65,7 +67,26 @@ def cmd_connect(args: argparse.Namespace) -> None:
 
     logger.log("dale_connect", tmux_session=dale.session, host=dale.host)
     info(f"tmux session '{dale.session}' ready")
-    info(f"Attach with: ssh {dale.ssh_dest} -t \"tmux attach -t {dale.session}\"")
+    info(f"Watch with: sdale watch {dale.name}  (Ctrl-b d to detach)")
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Attach to a dale's tmux session to watch in real time.
+
+    Opens an interactive SSH session that attaches to the dale's tmux
+    session. You see exactly what the agent is doing. Ctrl-b d to detach.
+    """
+    dale = get_dale(args.dale)
+
+    if not tmux_has_session(dale):
+        err(f"No active session '{dale.session}' on {dale.name}. "
+            f"Run 'sdale connect {dale.name}' first.")
+        sys.exit(1)
+
+    info(f"Attaching to dale '{dale.name}' (session: {dale.session})")
+    print(f"  Detach with: Ctrl-b d")
+    print()
+    tmux_attach(dale)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -270,6 +291,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("connect", help="Create/reuse tmux session on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
 
+    # watch
+    p = sub.add_parser("watch", help="Attach to the dale's tmux session (live view)")
+    p.add_argument("dale", help="Dale name from sdale.json")
+
     # run
     p = sub.add_parser("run", help="Send a command to the dale's tmux session")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -325,6 +350,7 @@ def main() -> None:
     # Map subcommands to functions
     commands = {
         "connect": cmd_connect,
+        "watch": cmd_watch,
         "run": cmd_run,
         "output": cmd_output,
         "sync": cmd_sync,
