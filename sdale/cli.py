@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,6 @@ from .remote import (
     rsync,
     scp_to,
     ssh,
-    tmux_attach,
     tmux_capture,
     tmux_ensure,
     tmux_has_session,
@@ -55,14 +55,76 @@ def err(msg: str) -> None:
     print(f"sdale: {msg}", file=sys.stderr)
 
 
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _install_watch_script(dale: DaleConfig) -> None:
+    """Install sdale-watch helper script in the shared volume.
+
+    Creates /opt/stacks/.sdale-watch (visible as /workspace/.sdale-watch
+    inside containers). The script takes a dale name and tails its log,
+    or lists available logs if no name given.
+
+    Idempotent — only writes once.
+    """
+    script_path = "/opt/stacks/.sdale-watch"
+    try:
+        result = ssh(dale, f"test -x {script_path} && echo exists || echo missing", capture=True)
+        if "exists" in result.stdout:
+            return
+    except subprocess.CalledProcessError:
+        pass
+
+    script = r'''#!/bin/bash
+# sdale-watch — tail agent activity logs
+# Installed by: sdale connect
+LOG_DIR="${SDALE_LOG_DIR:-/workspace}"
+if [ -z "$1" ]; then
+    echo "🐎 sdale activity logs:"
+    for f in "$LOG_DIR"/.sdale-*.log; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" | sed 's/^\.sdale-//;s/\.log$//')
+        lines=$(wc -l < "$f" 2>/dev/null || echo 0)
+        last=$(tail -1 "$f" 2>/dev/null | head -c 80)
+        echo "  $name ($lines lines) — $last"
+    done
+    echo ""
+    echo "Usage: sdale-watch <name>        # tail one log"
+    echo "       sdale-watch --all         # tail all logs"
+    exit 0
+fi
+if [ "$1" = "--all" ]; then
+    tail -f "$LOG_DIR"/.sdale-*.log
+else
+    LOG="$LOG_DIR/.sdale-$1.log"
+    if [ ! -f "$LOG" ]; then
+        echo "No log for '$1'. Run: sdale-watch (no args) to list available."
+        exit 1
+    fi
+    tail -f "$LOG"
+fi
+'''
+    try:
+        ssh(dale, f"cat > {script_path} << 'SDALESCRIPT'\n{script}SDALESCRIPT\nchmod +x {script_path}", capture=True)
+        # Also symlink into /usr/local/bin on any running clide containers
+        # so sdale-watch is on PATH inside the container
+        ssh(dale,
+            "for c in $(docker ps --format '{{.Names}}' --filter name=clide 2>/dev/null); do "
+            f"docker exec \"$c\" ln -sf /workspace/.sdale-watch /usr/local/bin/sdale-watch 2>/dev/null; "
+            "done",
+            capture=True)
+    except subprocess.CalledProcessError:
+        pass  # best effort
+
+
 # ── Subcommands ──────────────────────────────────────────────────────
 
 
 def cmd_connect(args: argparse.Namespace) -> None:
-    """Create or reuse a tmux session on a dale.
+    """Connect to a dale and set up the activity log.
 
-    If the tmux session already exists, this is a no-op.
-    Prints the attach command so the human knows how to watch.
+    Creates a tmux session for `sdale run` commands and initializes
+    the activity log file for `sdale watch`.
     """
     dale = get_dale(args.dale)
     logger = EventLogger(dale.name)
@@ -70,28 +132,40 @@ def cmd_connect(args: argparse.Namespace) -> None:
     info(f"Connecting to dale '{dale.name}' ({dale.ssh_dest})...")
     tmux_ensure(dale)
 
+    # Initialize the activity log in the shared volume (visible inside containers)
+    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    try:
+        ssh(dale, f"touch {log_file} && echo '── sdale connected ({dale.name}) ──' >> {log_file}", capture=True)
+    except subprocess.CalledProcessError:
+        pass
+
+    # Drop a watch helper script into the shared volume (idempotent)
+    _install_watch_script(dale)
+
     logger.log("dale_connect", tmux_session=dale.session, host=dale.host)
     info(f"tmux session '{dale.session}' ready")
-    info(f"Watch with: sdale watch {dale.name}  (Ctrl-b d to detach)")
+    info(f"Watch with: sdale-watch {dale.name}  (from clide ttyd)")
 
 
 def cmd_watch(args: argparse.Namespace) -> None:
-    """Attach to a dale's tmux session to watch in real time.
+    """Watch agent activity on a dale in real time.
 
-    Opens an interactive SSH session that attaches to the dale's tmux
-    session. You see exactly what the agent is doing. Ctrl-b d to detach.
+    Tails the activity log file on the remote host. All sdale exec
+    and run commands are logged here with timestamps, commands, and
+    output. Ctrl-c to stop watching.
     """
     dale = get_dale(args.dale)
+    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
 
-    if not tmux_has_session(dale):
-        err(f"No active session '{dale.session}' on {dale.name}. "
-            f"Run 'sdale connect {dale.name}' first.")
-        sys.exit(1)
-
-    info(f"Attaching to dale '{dale.name}' (session: {dale.session})")
-    print(f"  Detach with: Ctrl-b d")
+    info(f"Watching dale '{dale.name}' — Ctrl-c to stop")
     print()
-    tmux_attach(dale)
+
+    cmd = ["ssh", *dale.ssh_args, "-t", dale.ssh_dest,
+           f"touch {log_file} && tail -f {log_file}"]
+    try:
+        os.execvp("ssh", cmd)
+    except KeyboardInterrupt:
+        pass
 
 
 def cmd_exec(args: argparse.Namespace) -> None:
@@ -106,7 +180,7 @@ def cmd_exec(args: argparse.Namespace) -> None:
     command = args.command
 
     try:
-        result = ssh(dale, command, capture=True)
+        result = ssh(dale, command, capture=True, log=True)
         if result.stdout:
             print(result.stdout, end="")
         if result.stderr:
@@ -149,6 +223,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     dale = get_dale(args.dale)
     logger = EventLogger(dale.name)
     command = args.command
+
+    # Log to activity file so watchers see run commands too
+    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    safe = command.replace("'", "'\\''")[:200]
+    try:
+        ssh(dale, f"echo '\\n── '$(date +\"%H:%M:%S\")' ── [run] $ {safe}' >> {log_file}", capture=True)
+    except subprocess.CalledProcessError:
+        pass
 
     if args.wait:
         info(f"[{dale.name}] $ {command}")

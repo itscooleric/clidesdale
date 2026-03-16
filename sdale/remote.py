@@ -33,14 +33,19 @@ def _ensure_host_known(dale: DaleConfig) -> None:
 
 
 def ssh(dale: DaleConfig, command: str, capture: bool = False,
-        stdin_data: str | None = None) -> subprocess.CompletedProcess:
+        stdin_data: str | None = None, log: bool = False) -> subprocess.CompletedProcess:
     """Run a command on the dale via SSH.
+
+    When log=True, the command and its output are appended to a live
+    activity log on the remote host at /tmp/sdale-<dale>.log so humans
+    can watch agent activity with ``tail -f``.
 
     Args:
         dale:       The dale configuration.
         command:    The remote command string to execute.
         capture:    If True, capture stdout/stderr. If False, inherit terminal.
         stdin_data: If provided, pipe this string to stdin of the remote command.
+        log:        If True, tee output to the remote activity log.
 
     Returns:
         The CompletedProcess result.
@@ -49,7 +54,19 @@ def ssh(dale: DaleConfig, command: str, capture: bool = False,
         subprocess.CalledProcessError: If the SSH command fails.
     """
     _ensure_host_known(dale)
-    cmd = ["ssh", *dale.ssh_args, dale.ssh_dest, command]
+
+    if log:
+        log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+        safe_cmd = command.replace("'", "'\\''")[:200]
+        remote_cmd = (
+            f"echo '' >> {log_file}; "
+            f"echo '── '$(date +\"%H:%M:%S\")' $ {safe_cmd}' >> {log_file}; "
+            f"{{ {command} ; }} 2>&1 | tee -a {log_file}"
+        )
+    else:
+        remote_cmd = command
+
+    cmd = ["ssh", *dale.ssh_args, dale.ssh_dest, remote_cmd]
     return subprocess.run(
         cmd,
         capture_output=capture,
