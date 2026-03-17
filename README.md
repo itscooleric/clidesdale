@@ -26,7 +26,7 @@
   python 3.10+  ·  zero dependencies  ·  dale! 🐴
 ```
 
-Give your AI agent SSH access to a disposable VPS. It builds, tests, deploys, and breaks things — you watch via tmux. Dale!
+Give your AI agent SSH access to a disposable VPS. It builds, tests, deploys, and breaks things — you watch via activity logs. Dale!
 
 ## Why
 
@@ -40,19 +40,20 @@ AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/c
 ┌───────────────┐     SSH (ed25519)     ┌──────────────────┐
 │  agent        │ ────────────────────> │  dale (VPS)      │
 │  (sandboxed)  │                       │                  │
-│               │  rsync code ────────> │  docker build    │
-│  write code   │                       │  docker run      │
-│  unit tests   │  <──── results ────── │  deploy          │
-│  git          │                       │  break stuff     │
+│               │  sdale exec ────────> │  docker build    │
+│  write code   │  sdale push ────────> │  docker run      │
+│  unit tests   │  sdale sync ────────> │  deploy          │
+│  git          │  <──── results ────── │  break stuff     │
 └───────────────┘                       └──────────────────┘
         │                                       │
-        └──────── tmux co-dev session ──────────┘
-                  human attaches and watches
+        │          activity logs (.sdale-*.log)  │
+        └──────── sdale watch / clidestable ─────┘
+                  human watches in real time
 ```
 
 ### Core rules
 
-1. **Always use tmux** — every remote command runs in a named tmux session. The human can attach at any time. No invisible background jobs.
+1. **Everything is logged** — `sdale exec` and `sdale run` log all commands + output to activity files. The human can `sdale watch` or use [clidestable](https://github.com/itscooleric/clidestable) to see everything in real time.
 2. **Rsync, don't clone** — code lives in the agent's sandbox. Sync it to the VPS for builds. Single source of truth.
 3. **The VPS is disposable** — if the agent bricks it, reprovision. Keep provisioning scripted and repeatable.
 4. **SSH key per agent** — each agent gets its own key pair. Revoke by removing the pubkey.
@@ -114,27 +115,28 @@ See [`sdale.example.json`](sdale.example.json) for the full format.
 ### 4. Dale!
 
 ```bash
-# Connect to a dale (creates tmux session)
+# Connect to a dale (creates tmux session + activity log)
 sdale connect edge
 
-# Run commands (human watches in tmux)
-sdale run edge "docker build -t app ."
-sdale run edge "docker run --rm app npm test"
+# Run commands directly (captured in activity log)
+sdale exec edge "docker build -t app ."
+sdale exec edge "docker run --rm app npm test"
 
-# Read output
-sdale output edge
+# Or via tmux (observable + wait for completion)
+sdale run -w edge "make deploy"
+
+# Push a config file
+sdale push edge .env /srv/app/.env
 
 # Sync code to the dale
 sdale sync edge ./my-project /srv/app
 
-# Check status
+# Watch agent activity in real time
+sdale watch edge
+
+# Check status / view audit log
 sdale status edge
-
-# View audit log
 sdale log edge
-
-# Human attaches from their terminal
-ssh deploy@vps-ip -t "tmux attach -t build"
 ```
 
 ## CLI reference
@@ -154,13 +156,23 @@ ssh deploy@vps-ip -t "tmux attach -t build"
 | `sdale log <dale> [--full\|--since DUR]` | Show event log for a dale |
 | `sdale disconnect <dale>` | Kill the tmux session |
 
-## Logging
+## Observability
 
-Every command is logged as structured JSONL to `~/.sdale/logs/<dale>/events.jsonl`, compatible with the [clide session event schema v1](https://github.com/itscooleric/clide/blob/main/docs/schema/session-events-v1.md).
+### Activity logs
+`sdale exec` and `sdale run` write all commands and output to activity log files on the dale:
+
+```
+/opt/stacks/.sdale-<dale-name>.log
+```
+
+Watch them in real time with `sdale watch <dale>` or from [clidestable](https://github.com/itscooleric/clidestable)'s web dashboard.
+
+### Audit log (JSONL)
+Every command is also logged as structured JSONL to `~/.sdale/logs/<dale>/events.jsonl`, compatible with the [clide session event schema v1](https://github.com/itscooleric/clide/blob/main/docs/schema/session-events-v1.md).
 
 ```json
-{"event":"dale_run","ts":"2026-03-15T04:30:12Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","command":"docker build -t app ."}
-{"event":"dale_sync","ts":"2026-03-15T04:31:02Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","src":"./app","dst":"/srv/app","files":"14"}
+{"event":"dale_exec","ts":"2026-03-15T04:30:12Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","command":"docker build -t app .","exit_code":"0"}
+{"event":"dale_push","ts":"2026-03-15T04:31:02Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","src":".env","dst":"/srv/app/.env"}
 ```
 
 Secret values (API keys, tokens) are automatically scrubbed before writing.
