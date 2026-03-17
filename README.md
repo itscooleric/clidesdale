@@ -1,4 +1,4 @@
-# clide-sdale
+# clidesdale
 
 ```text
 
@@ -32,7 +32,7 @@ Give your AI agent SSH access to a disposable VPS. It builds, tests, deploys, an
 
 AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/clide)) can't run Docker, bind ports, or test infrastructure. But you don't want to give them the keys to production either.
 
-**clide-sdale** is the middle ground: a throwaway VPS the agent can SSH into and go a little crazy on. You co-pilot via shared tmux sessions — observable, interruptible, disposable.
+**clidesdale** is the middle ground: a throwaway VPS the agent can SSH into and go a little crazy on. You co-pilot via activity logs and shared tmux sessions — observable, interruptible, disposable.
 
 ## The pattern
 
@@ -141,8 +141,12 @@ ssh deploy@vps-ip -t "tmux attach -t build"
 
 | Command | Description |
 |---------|-------------|
-| `sdale connect <dale>` | Create/reuse tmux session on a dale |
-| `sdale run <dale> "<cmd>"` | Send a command to the dale's tmux session |
+| `sdale connect <dale>` | Create/reuse tmux session, set up activity log |
+| `sdale watch <dale>` | Watch agent activity in real time (tails activity log) |
+| `sdale exec <dale> "<cmd>"` | Run command via direct SSH (no tmux, good for scripting) |
+| `sdale push <dale> <src> <dst>` | Copy a single file to the dale via scp |
+| `sdale run <dale> "<cmd>"` | Send command to the dale's tmux session (observable) |
+| `sdale run -w <dale> "<cmd>"` | Send via tmux + wait for completion, print output |
 | `sdale output <dale> [-n N]` | Capture recent tmux pane output (default: 20 lines) |
 | `sdale sync <dale> <src> [dst]` | Rsync local directory to the dale |
 | `sdale status [dale]` | Show dale status (or list all) |
@@ -161,10 +165,18 @@ Every command is logged as structured JSONL to `~/.sdale/logs/<dale>/events.json
 
 Secret values (API keys, tokens) are automatically scrubbed before writing.
 
+## Ecosystem
+
+| Project | What |
+|---------|------|
+| **clidesdale** | This CLI — gives agents VPS access |
+| [clidestable](https://github.com/itscooleric/clidestable) | VPS-side server — dashboard, stall management, split terminal view |
+| [clide](https://github.com/itscooleric/clide) | CLI Development Environment — sandboxed terminal for AI agents |
+
 ## Roadmap
 
-See [issues](https://github.com/itscooleric/clide-sdale/issues) for the full backlog.
+See [issues](https://github.com/itscooleric/clidesdale/issues) for the full backlog.
 
 ## Name
 
-**clide-sdale** = [clide](https://github.com/itscooleric/clide)'s dale. A horse (Clydesdale → clide-sdale). Also Spanish for "dale!" — *go for it!* Because that's what you're telling your agent: here's a VPS, dale. 🐴
+**clidesdale** = [clide](https://github.com/itscooleric/clide)'s dale. A horse (Clydesdale → clidesdale). Also Spanish for "dale!" — *go for it!* Because that's what you're telling your agent: here's a VPS, dale. 🐴
