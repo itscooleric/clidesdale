@@ -187,9 +187,9 @@ Secret values (API keys, tokens) are automatically scrubbed before writing.
 
 | Project | What |
 |---------|------|
-| **clidesdale** | This CLI — gives agents VPS access |
-| [clidestable](https://github.com/itscooleric/clidestable) | VPS-side server — dashboard, stall management, split terminal view |
 | [clide](https://github.com/itscooleric/clide) | CLI Development Environment — sandboxed terminal for AI agents |
+| **clidesdale** | This CLI — SSH access to remote VPSes for agents |
+| [clidestable](https://github.com/itscooleric/clidestable) | VPS-side server — dashboard, stall management, split terminal view |
 
 ## Roadmap
 
