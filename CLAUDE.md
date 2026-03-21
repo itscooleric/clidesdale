@@ -18,6 +18,12 @@ Python 3.10+ — stdlib only, zero dependencies.
 - `sdale.example.json` — example config (safe for public)
 - `pyproject.toml` — packaging metadata
 
+## Config resolution
+sdale.json is found by (in order):
+1. `$SDALE_CONFIG` env var (explicit override)
+2. Walk up from cwd to filesystem root (like git finds .git)
+3. `~/.config/sdale/sdale.json` (global fallback)
+
 ## Running
 ```bash
 python -m sdale <command> <dale> [args...]
