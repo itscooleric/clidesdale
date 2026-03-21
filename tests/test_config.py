@@ -114,6 +114,72 @@ class TestFindConfigPath(unittest.TestCase):
                     self.assertEqual(result, cwd_config)
 
 
+    def test_walks_up_to_find_config(self) -> None:
+        """Finds sdale.json in a parent directory when not in cwd."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Put config in parent, cwd is a subdirectory
+            config_path = Path(tmpdir) / "sdale.json"
+            config_path.write_text('{"dales": {}}')
+            subdir = Path(tmpdir) / "src" / "deep"
+            subdir.mkdir(parents=True)
+            with patch("sdale.config.Path.cwd", return_value=subdir):
+                with patch.dict(os.environ, {}, clear=False):
+                    # Remove SDALE_CONFIG if set
+                    os.environ.pop("SDALE_CONFIG", None)
+                    result = find_config_path()
+                    self.assertEqual(result, config_path)
+
+    def test_sdale_config_env_override(self) -> None:
+        """SDALE_CONFIG env var takes highest priority."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Put a config via env var
+            env_config = Path(tmpdir) / "custom" / "sdale.json"
+            env_config.parent.mkdir(parents=True)
+            env_config.write_text('{"dales": {"env": {}}}')
+
+            # Also put one in cwd (should be ignored)
+            cwd_config = Path(tmpdir) / "cwd" / "sdale.json"
+            cwd_config.parent.mkdir()
+            cwd_config.write_text('{"dales": {"cwd": {}}}')
+
+            with patch("sdale.config.Path.cwd", return_value=cwd_config.parent):
+                with patch.dict(os.environ, {"SDALE_CONFIG": str(env_config)}):
+                    result = find_config_path()
+                    self.assertEqual(result, env_config)
+
+    def test_sdale_config_env_nonexistent_falls_through(self) -> None:
+        """SDALE_CONFIG pointing to nonexistent file falls through to walk-up."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd_config = Path(tmpdir) / "sdale.json"
+            cwd_config.write_text('{"dales": {}}')
+
+            with patch("sdale.config.Path.cwd", return_value=Path(tmpdir)):
+                with patch.dict(os.environ, {"SDALE_CONFIG": "/nonexistent/sdale.json"}):
+                    result = find_config_path()
+                    self.assertEqual(result, cwd_config)
+
+    def test_global_fallback_when_no_walkup_match(self) -> None:
+        """Falls back to ~/.config/sdale/sdale.json when walk-up finds nothing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No sdale.json in any parent of cwd
+            cwd = Path(tmpdir) / "projects" / "foo"
+            cwd.mkdir(parents=True)
+
+            # Global config exists
+            home = Path(tmpdir) / "home"
+            global_dir = home / ".config" / "sdale"
+            global_dir.mkdir(parents=True)
+            global_config = global_dir / "sdale.json"
+            global_config.write_text('{"dales": {"global": {}}}')
+
+            with patch("sdale.config.Path.cwd", return_value=cwd):
+                with patch("sdale.config.Path.home", return_value=home):
+                    with patch.dict(os.environ, {}, clear=False):
+                        os.environ.pop("SDALE_CONFIG", None)
+                        result = find_config_path()
+                        self.assertEqual(result, global_config)
+
+
 class TestLoadConfig(unittest.TestCase):
     """Tests for load_config — JSON parsing."""
 

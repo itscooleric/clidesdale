@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,10 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from sdale.cli import build_parser, _parse_since, cmd_log, main
+from sdale.cli import (
+    build_parser, _parse_since, cmd_cat, cmd_exec, cmd_health,
+    cmd_log, cmd_multi, cmd_pull, main,
+)
 
 
 class TestBuildParser(unittest.TestCase):
@@ -227,6 +231,420 @@ class TestCmdLog(unittest.TestCase):
 
                 lines = output.strip().splitlines()
                 self.assertEqual(len(lines), 20)
+
+
+class TestExecMergeStderr(unittest.TestCase):
+    """Tests for the exec --merge-stderr / -e flag."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_merge_stderr_long_flag(self) -> None:
+        """--merge-stderr flag is captured."""
+        args = self.parser.parse_args(["exec", "--merge-stderr", "edge", "ls"])
+        self.assertTrue(args.merge_stderr)
+
+    def test_merge_stderr_short_flag(self) -> None:
+        """-e flag is captured."""
+        args = self.parser.parse_args(["exec", "-e", "edge", "ls"])
+        self.assertTrue(args.merge_stderr)
+
+    def test_no_merge_stderr_default(self) -> None:
+        """merge_stderr defaults to False."""
+        args = self.parser.parse_args(["exec", "edge", "ls"])
+        self.assertFalse(args.merge_stderr)
+
+
+class TestPullSubcommand(unittest.TestCase):
+    """Tests for the pull subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_pull_with_local(self) -> None:
+        """'pull' parses dale, remote, and local."""
+        args = self.parser.parse_args(["pull", "edge", "/tmp/file", "./local"])
+        self.assertEqual(args.subcmd, "pull")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.remote, "/tmp/file")
+        self.assertEqual(args.local, "./local")
+
+    def test_pull_default_local(self) -> None:
+        """'pull' defaults local to empty string (uses remote filename)."""
+        args = self.parser.parse_args(["pull", "edge", "/tmp/file"])
+        self.assertEqual(args.local, "")
+
+
+class TestCatSubcommand(unittest.TestCase):
+    """Tests for the cat subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_cat_single_file(self) -> None:
+        """'cat' parses single path."""
+        args = self.parser.parse_args(["cat", "edge", "/etc/hosts"])
+        self.assertEqual(args.subcmd, "cat")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.paths, ["/etc/hosts"])
+
+    def test_cat_multiple_files(self) -> None:
+        """'cat' parses multiple paths."""
+        args = self.parser.parse_args(["cat", "edge", "/etc/hosts", "/etc/resolv.conf"])
+        self.assertEqual(args.paths, ["/etc/hosts", "/etc/resolv.conf"])
+
+
+class TestCmdExecMergeStderr(unittest.TestCase):
+    """Functional tests for cmd_exec with --merge-stderr."""
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_stderr_goes_to_stdout_with_flag(self, mock_get: MagicMock,
+                                              mock_ssh: MagicMock,
+                                              mock_logger: MagicMock) -> None:
+        """With -e, stderr is printed to stdout."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout="out\n", stderr="warn\n"
+        )
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.command = "ls"
+        args.merge_stderr = True
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_exec(args)
+            output = mock_out.getvalue()
+
+        self.assertIn("out\n", output)
+        self.assertIn("warn\n", output)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_stderr_goes_to_stderr_without_flag(self, mock_get: MagicMock,
+                                                 mock_ssh: MagicMock,
+                                                 mock_logger: MagicMock) -> None:
+        """Without -e, stderr goes to stderr."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout="out\n", stderr="warn\n"
+        )
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.command = "ls"
+        args.merge_stderr = False
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=StringIO) as mock_err:
+                cmd_exec(args)
+
+        self.assertIn("out\n", mock_out.getvalue())
+        self.assertIn("warn\n", mock_err.getvalue())
+
+
+class TestCmdPull(unittest.TestCase):
+    """Functional tests for cmd_pull."""
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.scp_from")
+    @patch("sdale.cli.get_dale")
+    def test_pull_with_explicit_local(self, mock_get: MagicMock,
+                                       mock_scp: MagicMock,
+                                       mock_logger: MagicMock) -> None:
+        """Pulls to explicit local path."""
+        mock_dale = MagicMock(name="edge")
+        mock_get.return_value = mock_dale
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.remote = "/opt/stacks/app.log"
+        args.local = "/tmp/local.log"
+
+        with patch("sys.stdout", new_callable=StringIO):
+            cmd_pull(args)
+
+        mock_scp.assert_called_once_with(mock_dale, "/opt/stacks/app.log", "/tmp/local.log")
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.scp_from")
+    @patch("sdale.cli.get_dale")
+    def test_pull_default_local_uses_basename(self, mock_get: MagicMock,
+                                               mock_scp: MagicMock,
+                                               mock_logger: MagicMock) -> None:
+        """Without local path, uses the remote filename."""
+        mock_dale = MagicMock(name="edge")
+        mock_get.return_value = mock_dale
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.remote = "/opt/stacks/app.log"
+        args.local = ""
+
+        with patch("sys.stdout", new_callable=StringIO):
+            cmd_pull(args)
+
+        mock_scp.assert_called_once_with(mock_dale, "/opt/stacks/app.log", "app.log")
+
+
+class TestMultiSubcommand(unittest.TestCase):
+    """Tests for the multi subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_multi_parses_commands(self) -> None:
+        """'multi' parses dale and multiple commands."""
+        args = self.parser.parse_args(["multi", "edge", "ls", "df -h", "uptime"])
+        self.assertEqual(args.subcmd, "multi")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.commands, ["ls", "df -h", "uptime"])
+
+    def test_multi_single_command(self) -> None:
+        """'multi' works with a single command."""
+        args = self.parser.parse_args(["multi", "edge", "hostname"])
+        self.assertEqual(args.commands, ["hostname"])
+
+
+class TestHealthSubcommand(unittest.TestCase):
+    """Tests for the health subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_health_basic(self) -> None:
+        """'health' parses dale name."""
+        args = self.parser.parse_args(["health", "edge"])
+        self.assertEqual(args.subcmd, "health")
+        self.assertEqual(args.dale, "edge")
+        self.assertFalse(args.docker)
+
+    def test_health_docker_flag(self) -> None:
+        """'health --docker' sets docker flag."""
+        args = self.parser.parse_args(["health", "--docker", "edge"])
+        self.assertTrue(args.docker)
+
+    def test_health_docker_short_flag(self) -> None:
+        """'health -d' sets docker flag."""
+        args = self.parser.parse_args(["health", "-d", "edge"])
+        self.assertTrue(args.docker)
+
+
+class TestCmdMulti(unittest.TestCase):
+    """Functional tests for cmd_multi."""
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_combines_commands(self, mock_get: MagicMock,
+                                mock_ssh: MagicMock,
+                                mock_logger: MagicMock) -> None:
+        """Sends all commands in a single SSH call."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout="── ls ──\nfile1\n\n── uptime ──\nup 2d\n\n"
+        )
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.commands = ["ls", "uptime"]
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_multi(args)
+
+        # Should call ssh exactly once (single round-trip)
+        mock_ssh.assert_called_once()
+        output = mock_out.getvalue()
+        self.assertIn("── ls ──", output)
+        self.assertIn("── uptime ──", output)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_exits_on_failure(self, mock_get: MagicMock,
+                               mock_ssh: MagicMock,
+                               mock_logger: MagicMock) -> None:
+        """Exits with non-zero when SSH fails."""
+        mock_get.return_value = MagicMock(name="edge")
+        exc = subprocess.CalledProcessError(2, "ssh")
+        exc.stdout = "── bad ──\nerror\n"
+        mock_ssh.side_effect = exc
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.commands = ["bad-cmd"]
+
+        with patch("sys.stdout", new_callable=StringIO):
+            with self.assertRaises(SystemExit) as ctx:
+                cmd_multi(args)
+            self.assertEqual(ctx.exception.code, 2)
+
+
+class TestCmdHealth(unittest.TestCase):
+    """Functional tests for cmd_health."""
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_basic_health(self, mock_get: MagicMock,
+                           mock_ssh: MagicMock,
+                           mock_logger: MagicMock) -> None:
+        """Prints health summary line."""
+        mock_dale = MagicMock(name="edge", session="work")
+        mock_dale.name = "edge"
+        mock_dale.session = "work"
+        mock_get.return_value = mock_dale
+
+        mock_ssh.side_effect = [
+            # First call: SSH echo ok
+            subprocess.CompletedProcess([], 0, stdout="ok\n"),
+            # Second call: system info
+            subprocess.CompletedProcess([], 0, stdout="LOAD=0.3\nDISK=45%\nUP=up 2 days\ntmux:yes\n"),
+        ]
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.docker = False
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_health(args)
+
+        output = mock_out.getvalue()
+        self.assertIn("edge", output)
+        self.assertIn("SSH ok", output)
+        self.assertIn("tmux: running", output)
+        self.assertIn("45%", output)
+        self.assertIn("0.3", output)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_health_ssh_failure(self, mock_get: MagicMock,
+                                 mock_ssh: MagicMock,
+                                 mock_logger: MagicMock) -> None:
+        """Exits with error when SSH fails."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.side_effect = subprocess.CalledProcessError(255, "ssh")
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.docker = False
+
+        with patch("sys.stderr", new_callable=StringIO):
+            with self.assertRaises(SystemExit) as ctx:
+                cmd_health(args)
+            self.assertEqual(ctx.exception.code, 1)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_health_with_docker(self, mock_get: MagicMock,
+                                 mock_ssh: MagicMock,
+                                 mock_logger: MagicMock) -> None:
+        """--docker flag shows container list."""
+        mock_dale = MagicMock()
+        mock_dale.name = "edge"
+        mock_dale.session = "work"
+        mock_get.return_value = mock_dale
+
+        mock_ssh.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout="ok\n"),
+            subprocess.CompletedProcess([], 0, stdout=(
+                "LOAD=0.1\nDISK=30%\nUP=up 5d\ntmux:yes\n"
+                "DOCKER_START\nclide:Up 2 hours\ncloperator:Up 2 hours\nDOCKER_END\n"
+            )),
+        ]
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.docker = True
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_health(args)
+
+        output = mock_out.getvalue()
+        self.assertIn("Containers (2)", output)
+        self.assertIn("clide:Up 2 hours", output)
+        self.assertIn("cloperator:Up 2 hours", output)
+
+
+class TestCmdCat(unittest.TestCase):
+    """Functional tests for cmd_cat."""
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_cat_single_file(self, mock_get: MagicMock,
+                              mock_ssh: MagicMock,
+                              mock_logger: MagicMock) -> None:
+        """Single file prints contents without header."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout="nameserver 1.1.1.1\n"
+        )
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.paths = ["/etc/resolv.conf"]
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_cat(args)
+
+        output = mock_out.getvalue()
+        self.assertIn("nameserver 1.1.1.1", output)
+        # No header for single file
+        self.assertNotIn("──", output)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_cat_multiple_files_shows_headers(self, mock_get: MagicMock,
+                                               mock_ssh: MagicMock,
+                                               mock_logger: MagicMock) -> None:
+        """Multiple files show header lines."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout="127.0.0.1 localhost\n"),
+            subprocess.CompletedProcess([], 0, stdout="nameserver 1.1.1.1\n"),
+        ]
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.paths = ["/etc/hosts", "/etc/resolv.conf"]
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_cat(args)
+
+        output = mock_out.getvalue()
+        self.assertIn("── /etc/hosts ──", output)
+        self.assertIn("── /etc/resolv.conf ──", output)
+        self.assertIn("127.0.0.1 localhost", output)
+        self.assertIn("nameserver 1.1.1.1", output)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_cat_missing_file_shows_error(self, mock_get: MagicMock,
+                                           mock_ssh: MagicMock,
+                                           mock_logger: MagicMock) -> None:
+        """Missing file prints error to stderr."""
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.side_effect = subprocess.CalledProcessError(
+            1, "ssh", stderr="No such file or directory"
+        )
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.paths = ["/nonexistent"]
+
+        with patch("sys.stdout", new_callable=StringIO):
+            with patch("sys.stderr", new_callable=StringIO) as mock_err:
+                cmd_cat(args)
+
+        self.assertIn("No such file", mock_err.getvalue())
 
 
 class TestMainDispatch(unittest.TestCase):

@@ -59,6 +59,7 @@ def ssh(dale: DaleConfig, command: str, capture: bool = False,
         log_file = f"/opt/stacks/.sdale-{dale.name}.log"
         safe_cmd = command.replace("'", "'\\''")[:200]
         remote_cmd = (
+            f"mkdir -p /opt/stacks 2>/dev/null; "
             f"echo '' >> {log_file}; "
             f"echo '── '$(date +\"%H:%M:%S\")' $ {safe_cmd}' >> {log_file}; "
             f"{{ {command} ; }} 2>&1 | tee -a {log_file}"
@@ -93,6 +94,22 @@ def scp_to(dale: DaleConfig, local_path: str, remote_path: str) -> None:
 
     _ensure_host_known(dale)
     cmd = ["scp", *dale.ssh_args, local_path, f"{dale.ssh_dest}:{remote_path}"]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def scp_from(dale: DaleConfig, remote_path: str, local_path: str) -> None:
+    """Copy a file from the dale to local via scp.
+
+    Args:
+        dale:        The dale configuration.
+        remote_path: Path to the file on the dale.
+        local_path:  Local destination path.
+
+    Raises:
+        subprocess.CalledProcessError: If scp fails (e.g. file not found on dale).
+    """
+    _ensure_host_known(dale)
+    cmd = ["scp", *dale.ssh_args, f"{dale.ssh_dest}:{remote_path}", local_path]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 

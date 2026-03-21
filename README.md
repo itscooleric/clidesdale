@@ -146,7 +146,13 @@ sdale log edge
 | `sdale connect <dale>` | Create/reuse tmux session, set up activity log |
 | `sdale watch <dale>` | Watch agent activity in real time (tails activity log) |
 | `sdale exec <dale> "<cmd>"` | Run command via direct SSH (no tmux, good for scripting) |
+| `sdale exec -e <dale> "<cmd>"` | Same, but merge stderr into stdout (avoids `2>&1`) |
+| `sdale multi <dale> "c1" "c2"` | Run multiple commands in one SSH round-trip |
+| `sdale cat <dale> <path> [path...]` | Read one or more remote files |
+| `sdale health <dale>` | Quick connectivity + system status check |
+| `sdale health -d <dale>` | Include Docker container listing |
 | `sdale push <dale> <src> <dst>` | Copy a single file to the dale via scp |
+| `sdale pull <dale> <remote> [local]` | Copy a file from the dale to local |
 | `sdale run <dale> "<cmd>"` | Send command to the dale's tmux session (observable) |
 | `sdale run -w <dale> "<cmd>"` | Send via tmux + wait for completion, print output |
 | `sdale output <dale> [-n N]` | Capture recent tmux pane output (default: 20 lines) |
