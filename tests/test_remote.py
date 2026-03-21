@@ -11,6 +11,7 @@ from unittest.mock import patch, call, MagicMock
 
 from sdale.config import DaleConfig
 from sdale.remote import (
+    scp_from,
     scp_to,
     ssh,
     tmux_attach,
@@ -247,6 +248,45 @@ class TestScpTo(unittest.TestCase):
         dale = make_dale()
         with self.assertRaises(FileNotFoundError):
             scp_to(dale, "/nonexistent/file.txt", "/tmp/dst")
+
+
+class TestScpFrom(unittest.TestCase):
+    """Tests for scp_from — copying files from a dale."""
+
+    @patch("sdale.remote.subprocess.run")
+    def test_copies_file(self, mock_run: MagicMock) -> None:
+        """Builds correct scp command with remote source first."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        dale = make_dale()
+
+        scp_from(dale, "/opt/stacks/app.log", "/tmp/local.log")
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], "scp")
+        self.assertIn("deploy@203.0.113.10:/opt/stacks/app.log", cmd)
+        self.assertEqual(cmd[-1], "/tmp/local.log")
+
+    @patch("sdale.remote.subprocess.run")
+    def test_raises_on_failure(self, mock_run: MagicMock) -> None:
+        """Raises CalledProcessError when remote file doesn't exist."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, "scp", stderr="No such file")
+        dale = make_dale()
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            scp_from(dale, "/nonexistent", "/tmp/dst")
+
+    @patch("sdale.remote.subprocess.run")
+    def test_includes_key(self, mock_run: MagicMock) -> None:
+        """scp command includes the SSH key."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        dale = make_dale()
+
+        scp_from(dale, "/remote/file", "/local/file")
+
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("-i", cmd)
+        self.assertIn("/tmp/test-key", cmd)
 
 
 class TestTmuxAttach(unittest.TestCase):

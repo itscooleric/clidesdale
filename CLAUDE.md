@@ -18,11 +18,41 @@ Python 3.10+ — stdlib only, zero dependencies.
 - `sdale.example.json` — example config (safe for public)
 - `pyproject.toml` — packaging metadata
 
+## Config resolution
+sdale.json is found by (in order):
+1. `$SDALE_CONFIG` env var (explicit override)
+2. Walk up from cwd to filesystem root (like git finds .git)
+3. `~/.config/sdale/sdale.json` (global fallback)
+
 ## Running
 ```bash
 python -m sdale <command> <dale> [args...]
 # or after pip install:
 sdale <command> <dale> [args...]
+# or if pip unavailable (common in containers):
+PYTHONPATH=/path/to/clide-sdale python3 -m sdale <command> <dale> [args...]
+```
+
+## Commands
+```bash
+sdale connect <dale>              # create/reuse tmux session
+sdale exec <dale> "command"       # direct SSH (no tmux)
+sdale exec -e <dale> "command"    # same, merge stderr into stdout
+sdale multi <dale> "c1" "c2"      # multiple commands, one SSH round-trip
+sdale cat <dale> /path [/path2]   # read remote file(s)
+sdale health <dale>               # quick connectivity + system check
+sdale health -d <dale>            # include Docker container listing
+sdale push <dale> <src> <dst>     # scp file to dale
+sdale pull <dale> <remote> [local]# scp file from dale
+sdale run <dale> "command"        # send via tmux (observable)
+sdale run -w <dale> "command"     # send via tmux + wait for output
+sdale output <dale> [-n N]        # capture tmux pane output
+sdale sync <dale> <src> [dst]     # rsync directory to dale
+sdale watch <dale>                # attach to tmux session (live view)
+sdale status [dale]               # show dale status
+sdale list                        # list configured dales
+sdale log <dale>                  # show event log
+sdale disconnect <dale>           # kill tmux session
 ```
 
 ## Rules

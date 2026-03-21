@@ -66,19 +66,39 @@ def find_config_path() -> Optional[Path]:
     """Locate the sdale.json config file.
 
     Searches in order:
-      1. ./sdale.json (current working directory)
-      2. ~/.config/sdale/sdale.json (user config)
+      1. $SDALE_CONFIG environment variable (explicit override)
+      2. Walk up from cwd to filesystem root looking for sdale.json
+      3. ~/.config/sdale/sdale.json (user global config)
+
+    The walk-up search mimics how git finds .git — the agent doesn't
+    need to ``cd`` to the exact project root.
 
     Returns:
         Path to the config file, or None if not found.
     """
-    candidates = [
-        Path.cwd() / "sdale.json",
-        Path.home() / ".config" / "sdale" / "sdale.json",
-    ]
-    for path in candidates:
-        if path.is_file():
-            return path
+    # Explicit override via env var
+    env_config = os.environ.get("SDALE_CONFIG")
+    if env_config:
+        p = Path(env_config)
+        if p.is_file():
+            return p
+
+    # Walk up from cwd
+    current = Path.cwd().resolve()
+    while True:
+        candidate = current / "sdale.json"
+        if candidate.is_file():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break  # reached filesystem root
+        current = parent
+
+    # Global fallback
+    global_config = Path.home() / ".config" / "sdale" / "sdale.json"
+    if global_config.is_file():
+        return global_config
+
     return None
 
 
@@ -95,7 +115,8 @@ def load_config() -> dict:
     path = find_config_path()
     if path is None:
         raise FileNotFoundError(
-            "No sdale.json found (checked ./sdale.json and ~/.config/sdale/sdale.json)"
+            "No sdale.json found (searched cwd → root + ~/.config/sdale/sdale.json). "
+            "Set SDALE_CONFIG=/path/to/sdale.json to override."
         )
     with open(path) as fh:
         return json.load(fh)
