@@ -136,7 +136,7 @@ def cmd_connect(args: argparse.Namespace) -> None:
     # Initialize the activity log in the shared volume (visible inside containers)
     log_file = f"/opt/stacks/.sdale-{dale.name}.log"
     try:
-        ssh(dale, f"touch {log_file} && echo '── sdale connected ({dale.name}) ──' >> {log_file}", capture=True)
+        ssh(dale, f"mkdir -p /opt/stacks 2>/dev/null; touch {log_file} && echo '── sdale connected ({dale.name}) ──' >> {log_file}", capture=True)
     except subprocess.CalledProcessError:
         pass
 

@@ -59,6 +59,7 @@ def ssh(dale: DaleConfig, command: str, capture: bool = False,
         log_file = f"/opt/stacks/.sdale-{dale.name}.log"
         safe_cmd = command.replace("'", "'\\''")[:200]
         remote_cmd = (
+            f"mkdir -p /opt/stacks 2>/dev/null; "
             f"echo '' >> {log_file}; "
             f"echo '── '$(date +\"%H:%M:%S\")' $ {safe_cmd}' >> {log_file}; "
             f"{{ {command} ; }} 2>&1 | tee -a {log_file}"
