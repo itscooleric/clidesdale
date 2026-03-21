@@ -96,6 +96,22 @@ def scp_to(dale: DaleConfig, local_path: str, remote_path: str) -> None:
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
+def scp_from(dale: DaleConfig, remote_path: str, local_path: str) -> None:
+    """Copy a file from the dale to local via scp.
+
+    Args:
+        dale:        The dale configuration.
+        remote_path: Path to the file on the dale.
+        local_path:  Local destination path.
+
+    Raises:
+        subprocess.CalledProcessError: If scp fails (e.g. file not found on dale).
+    """
+    _ensure_host_known(dale)
+    cmd = ["scp", *dale.ssh_args, f"{dale.ssh_dest}:{remote_path}", local_path]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
 def tmux_ensure(dale: DaleConfig) -> None:
     """Ensure a tmux session exists on the dale, creating it if needed.
 

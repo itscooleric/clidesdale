@@ -31,6 +31,7 @@ from .config import DaleConfig, get_dale, list_dales, find_config_path
 from .logger import EventLogger
 from .remote import (
     rsync,
+    scp_from,
     scp_to,
     ssh,
     tmux_capture,
@@ -174,23 +175,29 @@ def cmd_exec(args: argparse.Namespace) -> None:
     Unlike `run`, this captures stdout/stderr directly and returns
     the exit code. Use this for scripting, automation, or any command
     with complex quoting that tmux send-keys would mangle.
+
+    With --merge-stderr / -e, stderr is printed to stdout instead of
+    stderr. This avoids needing ``2>&1`` in the outer shell (which
+    breaks allowlist patterns like ``Bash(sdale exec:*)``).
     """
     dale = get_dale(args.dale)
     logger = EventLogger(dale.name)
     command = args.command
+    merge = getattr(args, "merge_stderr", False)
+    stderr_dest = sys.stdout if merge else sys.stderr
 
     try:
         result = ssh(dale, command, capture=True, log=True)
         if result.stdout:
             print(result.stdout, end="")
         if result.stderr:
-            print(result.stderr, end="", file=sys.stderr)
+            print(result.stderr, end="", file=stderr_dest)
         logger.log("dale_exec", command=command, exit_code="0")
     except subprocess.CalledProcessError as exc:
         if exc.stdout:
             print(exc.stdout, end="")
         if exc.stderr:
-            print(exc.stderr, end="", file=sys.stderr)
+            print(exc.stderr, end="", file=stderr_dest)
         logger.log("dale_exec", command=command, exit_code=str(exc.returncode))
         sys.exit(exc.returncode)
 
@@ -209,6 +216,181 @@ def cmd_push(args: argparse.Namespace) -> None:
     scp_to(dale, src, dst)
     logger.log("dale_push", src=src, dst=dst)
     info(f"Pushed {src} → {dale.name}:{dst}")
+
+
+def cmd_pull(args: argparse.Namespace) -> None:
+    """Copy a file from the dale to local.
+
+    Inverse of ``push``. Downloads a single remote file via scp.
+    If no local destination is given, saves to the current directory
+    using the remote filename.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    remote = args.remote
+    local = args.local or os.path.basename(remote)
+
+    scp_from(dale, remote, local)
+    logger.log("dale_pull", remote=remote, local=local)
+    info(f"Pulled {dale.name}:{remote} → {local}")
+
+
+def cmd_cat(args: argparse.Namespace) -> None:
+    """Read one or more remote files and print their contents.
+
+    When reading multiple files, each file's output is preceded by
+    a header line showing the path.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    paths = args.paths
+    multi = len(paths) > 1
+
+    for path in paths:
+        try:
+            result = ssh(dale, f"cat '{path}'", capture=True)
+            if multi:
+                print(f"── {path} ──")
+            if result.stdout:
+                print(result.stdout, end="")
+            if multi:
+                print()  # blank line between files
+        except subprocess.CalledProcessError as exc:
+            if multi:
+                print(f"── {path} ──")
+            err(f"{path}: {exc.stderr.strip() if exc.stderr else 'not found'}")
+
+    logger.log("dale_cat", paths=",".join(paths), count=str(len(paths)))
+
+
+def cmd_multi(args: argparse.Namespace) -> None:
+    """Run multiple commands in a single SSH round-trip.
+
+    Each command runs sequentially on the dale. Output is formatted
+    with separator headers between commands. Stderr is merged into
+    stdout per-command.
+
+    Exit code is 0 if all commands succeed, otherwise the last
+    non-zero exit code.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    commands = args.commands
+    last_error = 0
+
+    # Build a single SSH command that runs all commands with separators
+    # Each command's stderr is merged and exit code is captured
+    parts = []
+    for cmd in commands:
+        # Escape for shell embedding, merge stderr
+        safe = cmd.replace("'", "'\\''")
+        parts.append(f"echo '── {safe[:80]} ──'; {{ {cmd} ; }} 2>&1; echo")
+    combined = "; ".join(parts)
+
+    try:
+        result = ssh(dale, combined, capture=True)
+        if result.stdout:
+            print(result.stdout, end="")
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        last_error = exc.returncode
+
+    logger.log("dale_multi", commands=";".join(commands),
+               count=str(len(commands)))
+
+    if last_error:
+        sys.exit(last_error)
+
+
+def cmd_health(args: argparse.Namespace) -> None:
+    """Quick health check for a dale.
+
+    Checks SSH connectivity, tmux session status, disk usage, load
+    average, and optionally Docker container status. Prints a
+    single-line summary or detailed report.
+    """
+    import time as _time
+
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+
+    # Measure SSH round-trip
+    t0 = _time.monotonic()
+    try:
+        result = ssh(dale, "echo ok", capture=True)
+        latency_ms = int((_time.monotonic() - t0) * 1000)
+        if "ok" not in (result.stdout or ""):
+            err(f"{dale.name}: SSH connected but unexpected output")
+            sys.exit(1)
+    except subprocess.CalledProcessError:
+        err(f"{dale.name}: SSH connection failed")
+        sys.exit(1)
+
+    # Gather system info in one round-trip
+    checks = (
+        "cat /proc/loadavg | awk '{print $1}'",
+        "df -h / | tail -1 | awk '{print $5}'",
+        "uptime -p 2>/dev/null || uptime",
+    )
+    tmux_check = f"tmux has-session -t '{dale.session}' 2>/dev/null && echo tmux:yes || echo tmux:no"
+    docker_check = "docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | head -20"
+
+    info_cmd = "; ".join([
+        f"echo LOAD=$({checks[0]})",
+        f"echo DISK=$({checks[1]})",
+        f"echo UP=$({checks[2]})",
+        tmux_check,
+    ])
+
+    if args.docker:
+        info_cmd += f"; echo DOCKER_START; {docker_check}; echo DOCKER_END"
+
+    try:
+        result = ssh(dale, info_cmd, capture=True)
+    except subprocess.CalledProcessError:
+        # Partial failure is fine — print what we have
+        result = subprocess.CompletedProcess([], 0, stdout="")
+
+    output = result.stdout or ""
+    load = disk = up = tmux_status = "?"
+    docker_lines = []
+
+    for line in output.splitlines():
+        if line.startswith("LOAD="):
+            load = line[5:]
+        elif line.startswith("DISK="):
+            disk = line[5:]
+        elif line.startswith("UP="):
+            up = line[3:]
+        elif line.startswith("tmux:"):
+            tmux_status = "running" if "yes" in line else "no session"
+
+    # Parse docker output
+    in_docker = False
+    for line in output.splitlines():
+        if line == "DOCKER_START":
+            in_docker = True
+            continue
+        if line == "DOCKER_END":
+            in_docker = False
+            continue
+        if in_docker and line.strip():
+            docker_lines.append(line.strip())
+
+    # Print summary
+    tmux_icon = "\U0001F7E2" if tmux_status == "running" else "\u26AA"
+    info(f"{dale.name}: \u2705 SSH ok ({latency_ms}ms) | {tmux_icon} tmux: {tmux_status} | disk: {disk} | load: {load}")
+
+    if args.docker and docker_lines:
+        print(f"  Containers ({len(docker_lines)}):")
+        for line in docker_lines:
+            print(f"    {line}")
+    elif args.docker:
+        print("  No Docker containers found")
+
+    logger.log("dale_health", latency_ms=str(latency_ms), tmux=tmux_status,
+               disk=disk, load=load)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -437,12 +619,35 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("exec", help="Run a command via direct SSH (no tmux)")
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("command", help="Command to run (quote it)")
+    p.add_argument("--merge-stderr", "-e", action="store_true",
+                    help="Print stderr to stdout (avoids outer 2>&1)")
 
     # push
     p = sub.add_parser("push", help="Copy a local file to the dale via scp")
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("src", help="Local file path")
     p.add_argument("dst", help="Remote destination path")
+
+    # pull
+    p = sub.add_parser("pull", help="Copy a file from the dale to local")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("remote", help="Remote file path on the dale")
+    p.add_argument("local", nargs="?", default="", help="Local destination (default: current dir, same filename)")
+
+    # cat
+    p = sub.add_parser("cat", help="Read remote file(s) and print contents")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("paths", nargs="+", help="Remote file path(s) to read")
+
+    # multi
+    p = sub.add_parser("multi", help="Run multiple commands in one SSH round-trip")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("commands", nargs="+", help="Commands to run (each quoted separately)")
+
+    # health
+    p = sub.add_parser("health", help="Quick dale connectivity and status check")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("--docker", "-d", action="store_true", help="Include Docker container status")
 
     # run
     p = sub.add_parser("run", help="Send a command to the dale's tmux session")
@@ -504,6 +709,10 @@ def main() -> None:
         "watch": cmd_watch,
         "exec": cmd_exec,
         "push": cmd_push,
+        "pull": cmd_pull,
+        "cat": cmd_cat,
+        "multi": cmd_multi,
+        "health": cmd_health,
         "run": cmd_run,
         "output": cmd_output,
         "sync": cmd_sync,
