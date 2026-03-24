@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
-"""sdale CLI entry point."""
-
-from sdale.cli import main
-
-main()
+#!/bin/bash
+# sdale CLI wrapper — runs python3 -m sdale with the right PYTHONPATH.
+# activate.sh puts this dir on PATH, so `sdale` just works.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+exec python3 -m sdale "$@"
