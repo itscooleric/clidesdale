@@ -45,6 +45,11 @@ sdale write <dale> /path --from f # write local file to remote path
 sdale logs <dale> <container>     # view container logs (last 50 lines)
 sdale logs <dale> <ctr> -f        # follow container logs (live tail)
 sdale logs <dale> <ctr> --since 1h # logs from last hour
+sdale probe <dale>                 # network/DNS diagnostics overview
+sdale probe <dale> --dns host.com  # resolve specific hostname
+sdale probe <dale> --ping 8.8.8.8  # connectivity test
+sdale probe <dale> --reach url.com  # HTTP reachability check
+sdale probe <dale> --ports 80,443   # check listening ports
 sdale health <dale>               # quick connectivity + system check
 sdale health -d <dale>            # include Docker container listing
 sdale push <dale> <src> <dst>     # scp file to dale

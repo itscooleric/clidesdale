@@ -504,6 +504,268 @@ def cmd_health(args: argparse.Namespace) -> None:
                disk=disk, load=load)
 
 
+def cmd_probe(args: argparse.Namespace) -> None:
+    """Network and DNS diagnostics for a dale.
+
+    Default (no flags) shows DNS config, IP addresses, routes, default
+    gateway reachability, and Tailscale status. Optional flags probe
+    specific hostnames, targets, or ports.
+
+    Examples::
+
+        sdale probe edge                          # overview
+        sdale probe edge --dns git.lan.wubi.sh    # resolve hostname
+        sdale probe edge --ping 8.8.8.8           # connectivity test
+        sdale probe edge --reach hub.edge.wubi.sh # HTTP reachability
+        sdale probe edge --ports 80,443,7681      # check listening ports
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+
+    dns_hosts = args.dns or []
+    ping_targets = args.ping or []
+    reach_targets = args.reach or []
+    port_list = args.ports or ""
+
+    # ── Default overview (always runs) ────────────────────────────
+    parts = [
+        # DNS config
+        "echo DNS_START",
+        "cat /etc/resolv.conf 2>/dev/null | grep -v '^#' | grep -v '^$'",
+        "echo DNS_END",
+        # IP addresses (non-docker, non-veth)
+        "echo IP_START",
+        "ip -4 addr show 2>/dev/null | grep -E 'inet ' | grep -v 'docker\\|br-\\|veth' | awk '{print $NF, $2}'",
+        "echo IP_END",
+        # Default route
+        "echo ROUTE=$(ip route show default 2>/dev/null | head -1)",
+        # Gateway ping
+        "GW=$(ip route show default 2>/dev/null | awk '{print $3}' | head -1)",
+        "echo GW=$GW",
+        "if [ -n \"$GW\" ]; then "
+        "  ping -c 1 -W 2 $GW >/dev/null 2>&1 && echo GW_PING=ok || echo GW_PING=fail; "
+        "else echo GW_PING=no_gateway; fi",
+        # Tailscale
+        "echo TS_IP=$(tailscale ip -4 2>/dev/null || echo n/a)",
+        "echo TS_STATUS=$(tailscale status --self --json 2>/dev/null "
+        "| python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"Self\",{}).get(\"Online\",\"?\"))' "
+        "2>/dev/null || echo n/a)",
+        # Public IP
+        "echo PUB_IP=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || echo n/a)",
+        # Internet connectivity
+        "curl -s --max-time 3 -o /dev/null -w '%{http_code}' https://api.github.com/ 2>/dev/null "
+        "| xargs -I{} echo INET_CHECK={}",
+    ]
+
+    # ── DNS resolution ────────────────────────────────────────────
+    for host in dns_hosts:
+        safe = host.replace("'", "")
+        parts.append(f"echo DNS_LOOKUP_START={safe}")
+        parts.append(f"getent hosts '{safe}' 2>&1 || echo 'NXDOMAIN'")
+        parts.append(
+            f"dig +short '{safe}' 2>/dev/null | head -5 || "
+            f"nslookup '{safe}' 2>/dev/null | grep -A2 'Name:' | tail -3 || "
+            f"echo 'no dig/nslookup available'"
+        )
+        parts.append("echo DNS_LOOKUP_END")
+
+    # ── Ping targets ──────────────────────────────────────────────
+    for target in ping_targets:
+        safe = target.replace("'", "")
+        parts.append(f"echo PING_START={safe}")
+        parts.append(f"ping -c 3 -W 2 '{safe}' 2>&1 | tail -2")
+        parts.append("echo PING_END")
+
+    # ── HTTP reachability ─────────────────────────────────────────
+    for target in reach_targets:
+        safe = target.replace("'", "")
+        # Add https:// if no scheme
+        url = safe if "://" in safe else f"https://{safe}"
+        parts.append(f"echo REACH_START={safe}")
+        parts.append(
+            f"curl -sk --max-time 5 -o /dev/null "
+            f"-w 'status=%{{http_code}} time=%{{time_total}}s ip=%{{remote_ip}}\n' "
+            f"'{url}' 2>&1"
+        )
+        parts.append("echo REACH_END")
+
+    # ── Port check ────────────────────────────────────────────────
+    if port_list:
+        parts.append("echo PORTS_START")
+        parts.append("ss -tlnp 2>/dev/null | head -1")
+        for port in port_list.split(","):
+            port = port.strip()
+            if port:
+                parts.append(
+                    f"ss -tlnp 2>/dev/null | grep ':{port} ' || "
+                    f"echo '  (nothing listening on :{port})'"
+                )
+        parts.append("echo PORTS_END")
+
+    combined = "; ".join(parts)
+
+    try:
+        result = ssh(dale, combined, capture=True)
+    except subprocess.CalledProcessError as exc:
+        result = subprocess.CompletedProcess([], 0, stdout=exc.stdout or "")
+
+    output = result.stdout or ""
+
+    # ── Parse output ──────────────────────────────────────────────
+    kv = {}
+    dns_lines = []
+    ip_lines = []
+    section = None
+    dns_lookup_host = ""
+    dns_lookups = {}   # host -> lines
+    ping_host = ""
+    pings = {}         # host -> lines
+    reach_host = ""
+    reaches = {}       # host -> line
+    port_lines = []
+
+    for line in output.splitlines():
+        # Section markers
+        if line == "DNS_START":
+            section = "dns"
+            continue
+        elif line == "DNS_END":
+            section = None
+            continue
+        elif line == "IP_START":
+            section = "ip"
+            continue
+        elif line == "IP_END":
+            section = None
+            continue
+        elif line.startswith("DNS_LOOKUP_START="):
+            dns_lookup_host = line.split("=", 1)[1]
+            dns_lookups[dns_lookup_host] = []
+            section = "dns_lookup"
+            continue
+        elif line == "DNS_LOOKUP_END":
+            section = None
+            continue
+        elif line.startswith("PING_START="):
+            ping_host = line.split("=", 1)[1]
+            pings[ping_host] = []
+            section = "ping"
+            continue
+        elif line == "PING_END":
+            section = None
+            continue
+        elif line.startswith("REACH_START="):
+            reach_host = line.split("=", 1)[1]
+            reaches[reach_host] = []
+            section = "reach"
+            continue
+        elif line == "REACH_END":
+            section = None
+            continue
+        elif line == "PORTS_START":
+            section = "ports"
+            continue
+        elif line == "PORTS_END":
+            section = None
+            continue
+
+        if section == "dns" and line.strip():
+            dns_lines.append(line.strip())
+        elif section == "ip" and line.strip():
+            ip_lines.append(line.strip())
+        elif section == "dns_lookup" and line.strip():
+            dns_lookups[dns_lookup_host].append(line.strip())
+        elif section == "ping" and line.strip():
+            pings[ping_host].append(line.strip())
+        elif section == "reach" and line.strip():
+            reaches[reach_host].append(line.strip())
+        elif section == "ports" and line.strip():
+            port_lines.append(line.strip())
+        elif "=" in line and section is None:
+            key, _, val = line.partition("=")
+            kv[key.strip()] = val.strip()
+
+    # ── Print ─────────────────────────────────────────────────────
+    print(f"  {dale.name} — network probe")
+    print(f"  {'─' * 40}")
+
+    # IPs
+    if ip_lines:
+        print("  Interfaces:")
+        for ipl in ip_lines:
+            print(f"    {ipl}")
+
+    ts_ip = kv.get("TS_IP", "n/a")
+    ts_status = kv.get("TS_STATUS", "n/a")
+    if ts_ip != "n/a":
+        print(f"  Tailscale:  {ts_ip} (online: {ts_status})")
+
+    pub_ip = kv.get("PUB_IP", "n/a")
+    if pub_ip != "n/a":
+        print(f"  Public IP:  {pub_ip}")
+
+    # Gateway
+    gw = kv.get("GW", "?")
+    gw_ping = kv.get("GW_PING", "?")
+    gw_icon = "\u2705" if gw_ping == "ok" else "\u274C"
+    print(f"  Gateway:    {gw} {gw_icon}")
+    print(f"  Route:      {kv.get('ROUTE', '?')}")
+
+    # Internet
+    inet = kv.get("INET_CHECK", "?")
+    inet_icon = "\u2705" if inet == "200" else "\u274C"
+    print(f"  Internet:   {inet_icon} (github API: {inet})")
+
+    # DNS config
+    if dns_lines:
+        print()
+        print("  DNS config:")
+        for dl in dns_lines:
+            print(f"    {dl}")
+
+    # DNS lookups
+    if dns_lookups:
+        print()
+        print("  DNS lookups:")
+        for host, lines in dns_lookups.items():
+            resolved = lines[0] if lines else "?"
+            icon = "\u274C" if "NXDOMAIN" in resolved else "\u2705"
+            print(f"    {icon} {host}")
+            for ll in lines:
+                print(f"      {ll}")
+
+    # Pings
+    if pings:
+        print()
+        print("  Ping:")
+        for target, lines in pings.items():
+            summary = lines[-1] if lines else "?"
+            icon = "\u2705" if "0% packet loss" in summary else "\u274C"
+            print(f"    {icon} {target}")
+            for ll in lines:
+                print(f"      {ll}")
+
+    # Reachability
+    if reaches:
+        print()
+        print("  HTTP reachability:")
+        for target, lines in reaches.items():
+            detail = lines[0] if lines else "?"
+            icon = "\u2705" if "status=200" in detail or "status=30" in detail else "\u274C"
+            print(f"    {icon} {target}  {detail}")
+
+    # Ports
+    if port_lines:
+        print()
+        print("  Listening ports:")
+        for pl in port_lines:
+            print(f"    {pl}")
+
+    probed = ",".join(dns_hosts + ping_targets + reach_targets)
+    logger.log("dale_probe", targets=probed or "overview",
+               gateway=gw, gw_ping=gw_ping, internet=inet)
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Send a command to the dale's tmux session.
 
@@ -770,6 +1032,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("commands", nargs="+", help="Commands to run (each quoted separately)")
 
+    # probe
+    p = sub.add_parser("probe", help="Network and DNS diagnostics")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("--dns", nargs="+", metavar="HOST", help="Resolve hostname(s)")
+    p.add_argument("--ping", nargs="+", metavar="TARGET", help="Ping target(s)")
+    p.add_argument("--reach", nargs="+", metavar="URL", help="HTTP reachability check")
+    p.add_argument("--ports", metavar="LIST", help="Check listening ports (comma-separated)")
+
     # health
     p = sub.add_parser("health", help="Quick dale connectivity and status check")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -840,6 +1110,7 @@ def main() -> None:
         "write": cmd_write,
         "logs": cmd_logs,
         "multi": cmd_multi,
+        "probe": cmd_probe,
         "health": cmd_health,
         "run": cmd_run,
         "output": cmd_output,
