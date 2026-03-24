@@ -504,6 +504,235 @@ def cmd_health(args: argparse.Namespace) -> None:
                disk=disk, load=load)
 
 
+def cmd_info(args: argparse.Namespace) -> None:
+    """Gather structured system information from a dale.
+
+    Collects hostname, OS, uptime, CPU, memory, disk, network interfaces,
+    and optionally Docker info and installed tools in a single SSH
+    round-trip. Replaces common ad-hoc ``sdale exec`` chains for system
+    inspection.
+
+    Examples::
+
+        sdale info edge                    # system overview
+        sdale info edge --docker           # include Docker info
+        sdale info edge --tools            # check installed CLIs
+        sdale info edge --all              # everything
+        sdale info edge --json             # machine-readable output
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+
+    show_docker = args.docker or args.all
+    show_tools = args.tools or args.all
+    show_net = args.net or args.all
+
+    # Build info-gathering script — one SSH round-trip
+    parts = [
+        "echo HOSTNAME=$(hostname)",
+        "echo KERNEL=$(uname -r)",
+        "echo OS=$(. /etc/os-release 2>/dev/null && echo \"$PRETTY_NAME\" || uname -s)",
+        "echo ARCH=$(uname -m)",
+        "echo UPTIME=$(uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*load.*//')",
+        "echo LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}')",
+        # CPU
+        "echo CPUS=$(nproc 2>/dev/null || echo '?')",
+        "echo CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo '?')",
+        # Memory
+        "echo MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')",
+        "echo MEM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}')",
+        "echo MEM_AVAIL=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}')",
+        "echo SWAP_TOTAL=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}')",
+        "echo SWAP_USED=$(free -m 2>/dev/null | awk '/^Swap:/{print $3}')",
+        # Disk
+        "echo DISK_INFO_START",
+        "df -h --output=target,size,used,avail,pcent -x tmpfs -x devtmpfs -x overlay 2>/dev/null || df -h / 2>/dev/null",
+        "echo DISK_INFO_END",
+        # Tailscale
+        "echo TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo 'n/a')",
+        "echo TAILSCALE_STATUS=$(tailscale status --self --json 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"Self\",{}).get(\"Online\",\"?\"))' 2>/dev/null || echo 'n/a')",
+    ]
+
+    if show_net:
+        parts.extend([
+            "echo NET_INFO_START",
+            "ip -4 addr show 2>/dev/null | grep -E 'inet |^[0-9]' | head -20",
+            "echo NET_INFO_END",
+        ])
+
+    if show_docker:
+        parts.extend([
+            "echo DOCKER_VER=$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || echo 'not installed')",
+            "echo DOCKER_CONTAINERS_START",
+            "docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null | head -30",
+            "echo DOCKER_CONTAINERS_END",
+            "echo DOCKER_IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | wc -l)",
+            "echo DOCKER_DISK=$(docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | head -5)",
+        ])
+
+    if show_tools:
+        parts.extend([
+            "echo TOOLS_START",
+            "for t in claude codex copilot gh glab node python3 pip docker tmux; do "
+            "  v=$($t --version 2>/dev/null | head -1) || v='not found'; "
+            "  echo \"$t=$v\"; "
+            "done",
+            "echo TOOLS_END",
+        ])
+
+    combined = "; ".join(parts)
+
+    try:
+        result = ssh(dale, combined, capture=True)
+    except subprocess.CalledProcessError as exc:
+        result = subprocess.CompletedProcess([], 0, stdout=exc.stdout or "")
+
+    output = result.stdout or ""
+
+    # Parse key=value pairs
+    kv = {}
+    disk_lines = []
+    docker_lines = []
+    net_lines = []
+    tool_lines = []
+    section = None
+
+    for line in output.splitlines():
+        if line == "DISK_INFO_START":
+            section = "disk"
+            continue
+        elif line == "DISK_INFO_END":
+            section = None
+            continue
+        elif line == "DOCKER_CONTAINERS_START":
+            section = "docker"
+            continue
+        elif line == "DOCKER_CONTAINERS_END":
+            section = None
+            continue
+        elif line == "NET_INFO_START":
+            section = "net"
+            continue
+        elif line == "NET_INFO_END":
+            section = None
+            continue
+        elif line == "TOOLS_START":
+            section = "tools"
+            continue
+        elif line == "TOOLS_END":
+            section = None
+            continue
+
+        if section == "disk" and line.strip():
+            disk_lines.append(line)
+        elif section == "docker" and line.strip():
+            docker_lines.append(line)
+        elif section == "net" and line.strip():
+            net_lines.append(line)
+        elif section == "tools" and line.strip():
+            tool_lines.append(line)
+        elif "=" in line and section is None:
+            key, _, val = line.partition("=")
+            kv[key.strip()] = val.strip()
+
+    if args.json:
+        import json as _json
+        data = {
+            "dale": dale.name,
+            "hostname": kv.get("HOSTNAME", "?"),
+            "os": kv.get("OS", "?"),
+            "kernel": kv.get("KERNEL", "?"),
+            "arch": kv.get("ARCH", "?"),
+            "uptime": kv.get("UPTIME", "?"),
+            "load": kv.get("LOAD", "?"),
+            "cpus": kv.get("CPUS", "?"),
+            "cpu_model": kv.get("CPU_MODEL", "?"),
+            "mem_total_mb": kv.get("MEM_TOTAL", "?"),
+            "mem_used_mb": kv.get("MEM_USED", "?"),
+            "mem_avail_mb": kv.get("MEM_AVAIL", "?"),
+            "swap_total_mb": kv.get("SWAP_TOTAL", "?"),
+            "swap_used_mb": kv.get("SWAP_USED", "?"),
+            "tailscale_ip": kv.get("TAILSCALE_IP", "?"),
+        }
+        if show_docker:
+            data["docker_version"] = kv.get("DOCKER_VER", "?")
+            data["docker_images"] = kv.get("DOCKER_IMAGES", "?")
+            data["containers"] = [
+                dict(zip(("name", "status", "image"), l.split("\t")))
+                for l in docker_lines if "\t" in l
+            ]
+        if show_tools:
+            data["tools"] = {
+                l.split("=", 1)[0]: l.split("=", 1)[1]
+                for l in tool_lines if "=" in l
+            }
+        print(_json.dumps(data, indent=2))
+    else:
+        # Human-readable output
+        print(f"  {dale.name} ({kv.get('HOSTNAME', '?')})")
+        print(f"  {'─' * 40}")
+        print(f"  OS:        {kv.get('OS', '?')} ({kv.get('ARCH', '?')})")
+        print(f"  Kernel:    {kv.get('KERNEL', '?')}")
+        print(f"  Uptime:    {kv.get('UPTIME', '?')}")
+        print(f"  Load:      {kv.get('LOAD', '?')}")
+        print(f"  CPUs:      {kv.get('CPUS', '?')} ({kv.get('CPU_MODEL', '?')})")
+
+        mem_total = kv.get("MEM_TOTAL", "?")
+        mem_used = kv.get("MEM_USED", "?")
+        mem_avail = kv.get("MEM_AVAIL", "?")
+        swap_total = kv.get("SWAP_TOTAL", "0")
+        swap_used = kv.get("SWAP_USED", "0")
+        print(f"  Memory:    {mem_used}MB / {mem_total}MB ({mem_avail}MB available)")
+        if swap_total != "0":
+            print(f"  Swap:      {swap_used}MB / {swap_total}MB")
+
+        ts_ip = kv.get("TAILSCALE_IP", "n/a")
+        ts_status = kv.get("TAILSCALE_STATUS", "n/a")
+        if ts_ip != "n/a":
+            print(f"  Tailscale: {ts_ip} (online: {ts_status})")
+
+        if disk_lines:
+            print()
+            print("  Disk:")
+            for dl in disk_lines:
+                print(f"    {dl}")
+
+        if show_net and net_lines:
+            print()
+            print("  Network:")
+            for nl in net_lines:
+                print(f"    {nl}")
+
+        if show_docker:
+            docker_ver = kv.get("DOCKER_VER", "?")
+            docker_images = kv.get("DOCKER_IMAGES", "?")
+            print()
+            print(f"  Docker:    {docker_ver} ({docker_images} images)")
+            if docker_lines:
+                print(f"  Containers ({len(docker_lines)}):")
+                for dl in docker_lines:
+                    parts_line = dl.split("\t")
+                    if len(parts_line) == 3:
+                        print(f"    {parts_line[0]:24s} {parts_line[1]}")
+                    else:
+                        print(f"    {dl}")
+
+        if show_tools and tool_lines:
+            print()
+            print("  Tools:")
+            for tl in tool_lines:
+                if "=" in tl:
+                    name, _, ver = tl.partition("=")
+                    status = "\u2705" if "not found" not in ver else "\u274C"
+                    print(f"    {status} {name:12s} {ver}")
+
+    logger.log("dale_info", hostname=kv.get("HOSTNAME", "?"),
+               sections=",".join(
+                   s for s, v in [("docker", show_docker), ("tools", show_tools),
+                                  ("net", show_net)] if v
+               ))
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Send a command to the dale's tmux session.
 
@@ -770,6 +999,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("commands", nargs="+", help="Commands to run (each quoted separately)")
 
+    # info
+    p = sub.add_parser("info", help="Structured system info from a dale")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("--docker", "-d", action="store_true", help="Include Docker containers and images")
+    p.add_argument("--tools", "-t", action="store_true", help="Check installed CLI tools")
+    p.add_argument("--net", "-n", action="store_true", help="Show network interfaces")
+    p.add_argument("--all", "-a", action="store_true", help="Show everything")
+    p.add_argument("--json", "-j", action="store_true", help="Output as JSON")
+
     # health
     p = sub.add_parser("health", help="Quick dale connectivity and status check")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -840,6 +1078,7 @@ def main() -> None:
         "write": cmd_write,
         "logs": cmd_logs,
         "multi": cmd_multi,
+        "info": cmd_info,
         "health": cmd_health,
         "run": cmd_run,
         "output": cmd_output,
