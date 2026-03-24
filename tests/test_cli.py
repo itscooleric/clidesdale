@@ -12,7 +12,8 @@ from unittest.mock import patch, MagicMock
 
 from sdale.cli import (
     build_parser, _parse_since, cmd_cat, cmd_exec, cmd_health,
-    cmd_log, cmd_logs, cmd_multi, cmd_probe, cmd_pull, cmd_write, main,
+    cmd_info, cmd_log, cmd_logs, cmd_multi, cmd_probe, cmd_pull,
+    cmd_write, main,
 )
 
 
@@ -389,6 +390,87 @@ class TestLogsSubcommand(unittest.TestCase):
         self.assertIn("--since 2h", cmd_str)
         self.assertIn("myapp", cmd_str)
         self.assertNotIn("--follow", cmd_str)
+
+
+class TestInfoSubcommand(unittest.TestCase):
+    """Tests for the info subcommand."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_info_parses_dale(self) -> None:
+        args = self.parser.parse_args(["info", "edge"])
+        self.assertEqual(args.subcmd, "info")
+        self.assertEqual(args.dale, "edge")
+        self.assertFalse(args.docker)
+        self.assertFalse(args.tools)
+        self.assertFalse(args.json)
+
+    def test_info_all_flag(self) -> None:
+        args = self.parser.parse_args(["info", "edge", "--all"])
+        self.assertTrue(args.all)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_info_parses_output(self, mock_get: MagicMock, mock_ssh: MagicMock,
+                                 mock_logger: MagicMock) -> None:
+        dale_mock = MagicMock()
+        dale_mock.name = "edge"
+        mock_get.return_value = dale_mock
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout=(
+                "HOSTNAME=forge-edge\nKERNEL=6.1.0\nOS=Ubuntu 24.04\nARCH=x86_64\n"
+                "UPTIME=up 3 days\nLOAD=0.05 0.03 0.01\nCPUS=2\nCPU_MODEL=Xeon\n"
+                "MEM_TOTAL=4096\nMEM_USED=1024\nMEM_AVAIL=2800\n"
+                "SWAP_TOTAL=0\nSWAP_USED=0\n"
+                "DISK_INFO_START\n/  50G  8G  40G  16%\nDISK_INFO_END\n"
+                "TAILSCALE_IP=100.95.91.31\nTAILSCALE_STATUS=true\n"
+            )
+        )
+        args = MagicMock()
+        args.dale = "edge"
+        args.docker = False
+        args.tools = False
+        args.net = False
+        args.all = False
+        args.json = False
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_info(args)
+            output = mock_out.getvalue()
+        self.assertIn("forge-edge", output)
+        self.assertIn("1024MB / 4096MB", output)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_info_json_output(self, mock_get: MagicMock, mock_ssh: MagicMock,
+                               mock_logger: MagicMock) -> None:
+        dale_mock = MagicMock()
+        dale_mock.name = "edge"
+        mock_get.return_value = dale_mock
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout="HOSTNAME=test\nOS=Linux\nKERNEL=6.1\nARCH=x86\n"
+                          "UPTIME=up 1 day\nLOAD=0.1\nCPUS=2\nCPU_MODEL=Xeon\n"
+                          "MEM_TOTAL=4096\nMEM_USED=1024\nMEM_AVAIL=2800\n"
+                          "SWAP_TOTAL=0\nSWAP_USED=0\n"
+                          "TAILSCALE_IP=100.1.2.3\nTAILSCALE_STATUS=true\n"
+        )
+        args = MagicMock()
+        args.dale = "edge"
+        args.docker = False
+        args.tools = False
+        args.net = False
+        args.all = False
+        args.json = True
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_info(args)
+        import json
+        data = json.loads(mock_out.getvalue())
+        self.assertEqual(data["hostname"], "test")
+        self.assertEqual(data["cpus"], "2")
 
 
 class TestProbeSubcommand(unittest.TestCase):
