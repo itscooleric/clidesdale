@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 
 from sdale.cli import (
     build_parser, _parse_since, cmd_cat, cmd_exec, cmd_health,
-    cmd_log, cmd_logs, cmd_multi, cmd_pull, cmd_write, main,
+    cmd_log, cmd_logs, cmd_multi, cmd_probe, cmd_pull, cmd_write, main,
 )
 
 
@@ -389,6 +389,91 @@ class TestLogsSubcommand(unittest.TestCase):
         self.assertIn("--since 2h", cmd_str)
         self.assertIn("myapp", cmd_str)
         self.assertNotIn("--follow", cmd_str)
+
+
+class TestProbeSubcommand(unittest.TestCase):
+    """Tests for the probe subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_probe_parses_dale(self) -> None:
+        """'probe' parses dale name with no flags."""
+        args = self.parser.parse_args(["probe", "edge"])
+        self.assertEqual(args.subcmd, "probe")
+        self.assertEqual(args.dale, "edge")
+        self.assertIsNone(args.dns)
+        self.assertIsNone(args.ping)
+        self.assertIsNone(args.reach)
+        self.assertIsNone(args.ports)
+
+    def test_probe_dns_flag(self) -> None:
+        """'probe --dns' accepts multiple hostnames."""
+        args = self.parser.parse_args(["probe", "edge", "--dns", "a.com", "b.com"])
+        self.assertEqual(args.dns, ["a.com", "b.com"])
+
+    def test_probe_ports_flag(self) -> None:
+        """'probe --ports' accepts comma-separated list."""
+        args = self.parser.parse_args(["probe", "edge", "--ports", "80,443,7681"])
+        self.assertEqual(args.ports, "80,443,7681")
+
+    def test_probe_combined_flags(self) -> None:
+        """'probe' accepts multiple flags at once."""
+        args = self.parser.parse_args([
+            "probe", "edge",
+            "--dns", "host.com",
+            "--ping", "8.8.8.8",
+            "--reach", "https://api.github.com",
+            "--ports", "80,443",
+        ])
+        self.assertEqual(args.dns, ["host.com"])
+        self.assertEqual(args.ping, ["8.8.8.8"])
+        self.assertEqual(args.reach, ["https://api.github.com"])
+        self.assertEqual(args.ports, "80,443")
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_probe_parses_output(self, mock_get: MagicMock, mock_ssh: MagicMock,
+                                  mock_logger: MagicMock) -> None:
+        """'probe' parses structured output from SSH."""
+        dale_mock = MagicMock()
+        dale_mock.name = "edge"
+        mock_get.return_value = dale_mock
+        mock_ssh.return_value = subprocess.CompletedProcess(
+            [], 0, stdout=(
+                "DNS_START\n"
+                "nameserver 127.0.0.53\n"
+                "DNS_END\n"
+                "IP_START\n"
+                "ens6 10.0.0.5/24\n"
+                "tailscale0 100.95.91.31/32\n"
+                "IP_END\n"
+                "ROUTE=default via 10.0.0.1 dev ens6\n"
+                "GW=10.0.0.1\n"
+                "GW_PING=ok\n"
+                "TS_IP=100.95.91.31\n"
+                "TS_STATUS=true\n"
+                "PUB_IP=66.179.138.11\n"
+                "INET_CHECK=200\n"
+            )
+        )
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.dns = None
+        args.ping = None
+        args.reach = None
+        args.ports = None
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            cmd_probe(args)
+            output = mock_out.getvalue()
+
+        self.assertIn("edge", output)
+        self.assertIn("100.95.91.31", output)
+        self.assertIn("10.0.0.1", output)
+        self.assertIn("200", output)
 
 
 class TestCmdExecMergeStderr(unittest.TestCase):
