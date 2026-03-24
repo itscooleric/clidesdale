@@ -45,6 +45,11 @@ sdale write <dale> /path --from f # write local file to remote path
 sdale logs <dale> <container>     # view container logs (last 50 lines)
 sdale logs <dale> <ctr> -f        # follow container logs (live tail)
 sdale logs <dale> <ctr> --since 1h # logs from last hour
+sdale info <dale>                  # system overview (OS, CPU, memory, disk)
+sdale info <dale> -d              # include Docker containers + images
+sdale info <dale> -t              # check installed CLI tools
+sdale info <dale> -a              # show everything
+sdale info <dale> -j              # JSON output
 sdale probe <dale>                 # network/DNS diagnostics overview
 sdale probe <dale> --dns host.com  # resolve specific hostname
 sdale probe <dale> --ping 8.8.8.8  # connectivity test
