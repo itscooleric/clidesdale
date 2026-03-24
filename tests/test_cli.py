@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 
 from sdale.cli import (
     build_parser, _parse_since, cmd_cat, cmd_exec, cmd_health,
-    cmd_log, cmd_multi, cmd_pull, main,
+    cmd_log, cmd_logs, cmd_multi, cmd_pull, cmd_write, main,
 )
 
 
@@ -292,6 +292,103 @@ class TestCatSubcommand(unittest.TestCase):
         """'cat' parses multiple paths."""
         args = self.parser.parse_args(["cat", "edge", "/etc/hosts", "/etc/resolv.conf"])
         self.assertEqual(args.paths, ["/etc/hosts", "/etc/resolv.conf"])
+
+
+class TestWriteSubcommand(unittest.TestCase):
+    """Tests for the write subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_write_parses_dale_and_path(self) -> None:
+        """'write' parses dale and remote path."""
+        args = self.parser.parse_args(["write", "edge", "/opt/app/.env"])
+        self.assertEqual(args.subcmd, "write")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.path, "/opt/app/.env")
+        self.assertIsNone(args.from_file)
+
+    def test_write_from_flag(self) -> None:
+        """'write' parses --from for local file source."""
+        args = self.parser.parse_args(["write", "edge", "/remote/f", "--from", "/local/f"])
+        self.assertEqual(args.from_file, "/local/f")
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.scp_to")
+    @patch("sdale.cli.get_dale")
+    def test_write_from_file(self, mock_get: MagicMock, mock_scp: MagicMock,
+                             mock_ssh: MagicMock, mock_logger: MagicMock) -> None:
+        """'write --from' reads local file and pushes to dale."""
+        from sdale.cli import cmd_write
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.return_value = subprocess.CompletedProcess([], 0)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("test content")
+            f.flush()
+            tmp = f.name
+
+        try:
+            args = MagicMock()
+            args.dale = "edge"
+            args.path = "/remote/file"
+            args.from_file = tmp
+            cmd_write(args)
+            mock_scp.assert_called_once()
+            mock_ssh.assert_called_once()
+        finally:
+            os.unlink(tmp)
+
+
+class TestLogsSubcommand(unittest.TestCase):
+    """Tests for the logs subcommand parser."""
+
+    def setUp(self) -> None:
+        self.parser = build_parser()
+
+    def test_logs_parses_container(self) -> None:
+        """'logs' parses dale and container name."""
+        args = self.parser.parse_args(["logs", "edge", "cloperator"])
+        self.assertEqual(args.subcmd, "logs")
+        self.assertEqual(args.dale, "edge")
+        self.assertEqual(args.container, "cloperator")
+        self.assertEqual(args.tail, 50)
+        self.assertFalse(args.follow)
+
+    def test_logs_with_options(self) -> None:
+        """'logs' parses --tail, --since, --follow."""
+        args = self.parser.parse_args(["logs", "edge", "clem", "-n", "100", "--since", "1h", "-f"])
+        self.assertEqual(args.tail, 100)
+        self.assertEqual(args.since, "1h")
+        self.assertTrue(args.follow)
+
+    @patch("sdale.cli.EventLogger")
+    @patch("sdale.cli.ssh")
+    @patch("sdale.cli.get_dale")
+    def test_logs_builds_docker_command(self, mock_get: MagicMock,
+                                        mock_ssh: MagicMock,
+                                        mock_logger: MagicMock) -> None:
+        """'logs' constructs correct docker logs command."""
+        from sdale.cli import cmd_logs
+        mock_get.return_value = MagicMock(name="edge")
+        mock_ssh.return_value = subprocess.CompletedProcess([], 0, stdout="log line\n")
+
+        args = MagicMock()
+        args.dale = "edge"
+        args.container = "myapp"
+        args.tail = 25
+        args.since = "2h"
+        args.follow = False
+        cmd_logs(args)
+
+        call_args = mock_ssh.call_args
+        cmd_str = call_args[0][1]
+        self.assertIn("docker logs", cmd_str)
+        self.assertIn("--tail 25", cmd_str)
+        self.assertIn("--since 2h", cmd_str)
+        self.assertIn("myapp", cmd_str)
+        self.assertNotIn("--follow", cmd_str)
 
 
 class TestCmdExecMergeStderr(unittest.TestCase):
