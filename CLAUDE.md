@@ -40,6 +40,11 @@ sdale exec <dale> "command"       # direct SSH (no tmux)
 sdale exec -e <dale> "command"    # same, merge stderr into stdout
 sdale multi <dale> "c1" "c2"      # multiple commands, one SSH round-trip
 sdale cat <dale> /path [/path2]   # read remote file(s)
+sdale write <dale> /remote/path   # write stdin to remote file
+sdale write <dale> /path --from f # write local file to remote path
+sdale logs <dale> <container>     # view container logs (last 50 lines)
+sdale logs <dale> <ctr> -f        # follow container logs (live tail)
+sdale logs <dale> <ctr> --since 1h # logs from last hour
 sdale health <dale>               # quick connectivity + system check
 sdale health -d <dale>            # include Docker container listing
 sdale push <dale> <src> <dst>     # scp file to dale

@@ -9,6 +9,9 @@ Usage:
     sdale watch <dale>
     sdale exec <dale> "<command>"
     sdale push <dale> <local-file> <remote-path>
+    sdale write <dale> /remote/path          # reads stdin
+    sdale write <dale> /remote/path --from /local/file
+    sdale logs <dale> <container> [--tail N] [--since DUR] [--follow]
     sdale run <dale> "<command>"
     sdale output <dale> [--lines N]
     sdale sync <dale> <src> [dst]
@@ -261,6 +264,114 @@ def cmd_cat(args: argparse.Namespace) -> None:
             err(f"{path}: {exc.stderr.strip() if exc.stderr else 'not found'}")
 
     logger.log("dale_cat", paths=",".join(paths), count=str(len(paths)))
+
+
+def cmd_write(args: argparse.Namespace) -> None:
+    """Write content to a remote file, bypassing shell quoting issues.
+
+    Reads content from stdin (pipe) or a local file (``--from``), writes
+    it to a local temp file, scp's it to the dale, then atomically moves
+    it into place. This avoids all heredoc/quoting problems that plague
+    ``sdale exec`` for file writes.
+
+    Examples::
+
+        echo 'VPS_NAME=edge' | sdale write edge /opt/stacks/vps-caddy/.env
+        sdale write edge /opt/stacks/app/config.yml --from ./config.yml
+        cat Caddyfile | sdale write core /opt/stacks/vps-caddy/Caddyfile
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    remote_path = args.path
+
+    # Read content from --from file or stdin.
+    if args.from_file:
+        local_path = args.from_file
+        if not Path(local_path).exists():
+            raise FileNotFoundError(f"Local file not found: {local_path}")
+        with open(local_path, "rb") as fh:
+            content = fh.read()
+    else:
+        if sys.stdin.isatty():
+            err("No input. Pipe content or use --from /local/file")
+            sys.exit(1)
+        content = sys.stdin.buffer.read()
+
+    if not content:
+        err("Empty input — nothing to write")
+        sys.exit(1)
+
+    # Write to local temp file, scp to dale, mv into place
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".sdale-write") as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        remote_tmp = f"/tmp/.sdale-write-{os.getpid()}"
+        scp_to(dale, tmp_path, remote_tmp)
+        # Atomic move — ensures the file appears complete, not partially written.
+        # mkdir -p the parent in case it doesn't exist yet.
+        parent_dir = str(Path(remote_path).parent)
+        ssh(dale, f"mkdir -p '{parent_dir}' && mv -f '{remote_tmp}' '{remote_path}'",
+            capture=True)
+    finally:
+        os.unlink(tmp_path)
+
+    size = len(content)
+    logger.log("dale_write", path=remote_path, bytes=str(size))
+    info(f"Wrote {size} bytes → {dale.name}:{remote_path}")
+
+
+def cmd_logs(args: argparse.Namespace) -> None:
+    """View container logs on a dale.
+
+    Wraps ``docker logs`` with proper stderr merging and sensible
+    defaults. Supports tail count, time-based filtering, and live
+    follow mode.
+
+    Examples::
+
+        sdale logs edge cloperator
+        sdale logs edge clem --tail 100
+        sdale logs core homeassistant --since 1h
+        sdale logs edge clide-web-1 --follow
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    container = args.container
+
+    docker_args = ["docker", "logs"]
+    docker_args.extend(["--tail", str(args.tail)])
+    if args.since:
+        docker_args.extend(["--since", args.since])
+    if args.follow:
+        docker_args.append("--follow")
+    docker_args.append(container)
+
+    cmd_str = " ".join(docker_args) + " 2>&1"
+
+    if args.follow:
+        # For --follow, don't capture — stream directly to terminal.
+        # Use os.execvp-style via subprocess with inherited I/O.
+        try:
+            ssh(dale, cmd_str, capture=False)
+        except subprocess.CalledProcessError:
+            pass  # Ctrl-C or container stopped
+        except KeyboardInterrupt:
+            pass
+    else:
+        try:
+            result = ssh(dale, cmd_str, capture=True)
+            if result.stdout:
+                print(result.stdout, end="")
+        except subprocess.CalledProcessError as exc:
+            if exc.stdout:
+                print(exc.stdout, end="")
+            if exc.stderr:
+                err(exc.stderr.strip())
+
+    logger.log("dale_logs", container=container, follow=str(args.follow))
 
 
 def cmd_multi(args: argparse.Namespace) -> None:
@@ -639,6 +750,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("paths", nargs="+", help="Remote file path(s) to read")
 
+    # write
+    p = sub.add_parser("write", help="Write content to a remote file (stdin or --from)")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("path", help="Remote file path to write")
+    p.add_argument("--from", dest="from_file", metavar="FILE",
+                    help="Read from local file instead of stdin")
+
+    # logs
+    p = sub.add_parser("logs", help="View container logs on a dale")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("container", help="Container name")
+    p.add_argument("--tail", "-n", type=int, default=50, help="Number of lines (default: 50)")
+    p.add_argument("--since", metavar="DUR", help="Show logs since duration (e.g. 1h, 30m)")
+    p.add_argument("--follow", "-f", action="store_true", help="Follow log output (Ctrl-C to stop)")
+
     # multi
     p = sub.add_parser("multi", help="Run multiple commands in one SSH round-trip")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -711,6 +837,8 @@ def main() -> None:
         "push": cmd_push,
         "pull": cmd_pull,
         "cat": cmd_cat,
+        "write": cmd_write,
+        "logs": cmd_logs,
         "multi": cmd_multi,
         "health": cmd_health,
         "run": cmd_run,
