@@ -1,13 +1,14 @@
-"""Tests for sdale.logger — JSONL event logging and secret scrubbing."""
+"""Tests for sdale.logger — JSONL event logging, secret scrubbing, operator detection."""
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-from sdale.logger import EventLogger, _scrub_secrets
+from sdale.logger import EventLogger, _scrub_secrets, detect_operator
 
 
 class TestScrubSecrets(unittest.TestCase):
@@ -47,6 +48,35 @@ class TestScrubSecrets(unittest.TestCase):
             self.assertIn("[REDACTED:GH_TOKEN]", result)
             self.assertNotIn("sk-ant-secret", result)
             self.assertNotIn("ghp_tokentokentoken", result)
+
+
+class TestDetectOperator(unittest.TestCase):
+    """Tests for operator identity detection."""
+
+    @patch.dict(os.environ, {"CLIDE_OPERATOR": "clem"})
+    def test_env_var_takes_priority(self) -> None:
+        """CLIDE_OPERATOR env var is used first."""
+        self.assertEqual(detect_operator(), "clem")
+
+    @patch.dict(os.environ, {"CLIDE_OPERATOR": ""})
+    @patch("sdale.logger.subprocess.run")
+    def test_falls_back_to_tmux(self, mock_run: MagicMock) -> None:
+        """Falls back to tmux window name when env var is empty."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            [], 0, stdout="clide\n"
+        )
+        self.assertEqual(detect_operator(), "clide")
+
+    @patch.dict(os.environ, {"CLIDE_OPERATOR": ""})
+    @patch("sdale.logger.subprocess.run", side_effect=FileNotFoundError)
+    def test_unknown_when_no_tmux(self, mock_run: MagicMock) -> None:
+        """Returns 'unknown' when tmux is not available."""
+        self.assertEqual(detect_operator(), "unknown")
+
+    @patch.dict(os.environ, {"CLIDE_OPERATOR": "  hale  "})
+    def test_env_var_stripped(self) -> None:
+        """CLIDE_OPERATOR is stripped of whitespace."""
+        self.assertEqual(detect_operator(), "hale")
 
 
 class TestEventLogger(unittest.TestCase):
@@ -146,6 +176,17 @@ class TestEventLogger(unittest.TestCase):
                 result = EventLogger.get_log_path("edge")
                 self.assertIsNotNone(result)
                 self.assertTrue(result.is_file())
+
+    @patch("sdale.logger.detect_operator", return_value="clide")
+    def test_operator_field_in_events(self, mock_op: MagicMock) -> None:
+        """Every logged event includes the operator field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SDALE_LOG_DIR": tmpdir}):
+                logger = EventLogger("edge")
+                logger.log("dale_exec", command="ls")
+
+                event = json.loads(logger.log_file.read_text().strip())
+                self.assertEqual(event["operator"], "clide")
 
     def test_get_log_path_missing(self) -> None:
         """get_log_path returns None when no logs exist."""
