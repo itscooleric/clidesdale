@@ -8,6 +8,7 @@ Events are scrubbed for secrets before writing.
 
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,35 @@ def _scrub_secrets(text: str) -> str:
     return text
 
 
+def detect_operator() -> str:
+    """Detect the current operator identity.
+
+    Resolution order:
+        1. ``$CLIDE_OPERATOR`` env var (set by boss when creating windows)
+        2. tmux window name (e.g. ``clem``, ``clide``)
+        3. ``"unknown"``
+
+    Returns:
+        The operator name string.
+    """
+    op = os.environ.get("CLIDE_OPERATOR", "").strip()
+    if op:
+        return op
+
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{window_name}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        name = result.stdout.strip()
+        if name and result.returncode == 0:
+            return name
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return "unknown"
+
+
 class EventLogger:
     """JSONL event logger for a specific dale.
 
@@ -59,19 +89,22 @@ class EventLogger:
     Attributes:
         dale_name:  Name of the dale this logger is for.
         session_id: Unique session identifier (sdale-<dale>-<timestamp>).
+        operator:   Detected operator identity.
         log_file:   Path to the JSONL log file.
     """
 
     def __init__(self, dale_name: str) -> None:
         """Initialize the logger for a dale.
 
-        Creates the log directory if it doesn't exist.
+        Creates the log directory if it doesn't exist. Detects the
+        operator identity from env var or tmux window name.
 
         Args:
             dale_name: Name of the dale to log events for.
         """
         self.dale_name = dale_name
         self.session_id = f"sdale-{dale_name}-{int(time.time())}"
+        self.operator = detect_operator()
 
         log_dir = Path(
             os.environ.get("SDALE_LOG_DIR", Path.home() / ".sdale" / "logs")
@@ -97,6 +130,7 @@ class EventLogger:
             "session_id": self.session_id,
             "schema_version": 1,
             "dale": self.dale_name,
+            "operator": self.operator,
             **extra,
         }
 
