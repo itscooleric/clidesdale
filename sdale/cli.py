@@ -19,6 +19,7 @@ Usage:
     sdale list
     sdale log <dale> [--full | --since DURATION]
     sdale networks <dale> [--compose-dir DIR] [--force-recreate]
+    sdale watchdog [dale] [--reboot --yes]
     sdale disconnect <dale>
     sdale self                                  # local environment summary
     sdale self exec "<command>"                 # run command locally
@@ -1347,6 +1348,220 @@ def cmd_self(args: argparse.Namespace) -> None:
     print()
 
 
+# ── Watchdog ────────────────────────────────────────────────────────
+
+
+def _check_dale_health(dale: DaleConfig) -> dict:
+    """Run health checks on a single dale via SSH.
+
+    Collects uptime, disk usage, memory, docker status, and load average
+    in a single SSH round-trip. Returns a dict with structured results.
+
+    Args:
+        dale: The dale configuration to check.
+
+    Returns:
+        A dict with keys: name, status, uptime, disk, memory, docker, load.
+        If SSH fails, status is "UNREACHABLE" and other fields are "n/a".
+    """
+    import time as _time
+
+    result_data = {
+        "name": dale.name,
+        "status": "OK",
+        "uptime": "n/a",
+        "disk": "n/a",
+        "memory": "n/a",
+        "docker": "n/a",
+        "load": "n/a",
+        "latency_ms": 0,
+    }
+
+    health_cmd = "; ".join([
+        "echo UPTIME_START",
+        "uptime",
+        "echo UPTIME_END",
+        "echo DISK_START",
+        "df -h /",
+        "echo DISK_END",
+        "echo MEM_START",
+        "free -m | head -2",
+        "echo MEM_END",
+        "echo DOCKER_START",
+        "docker ps --format '{{.Names}}: {{.Status}}' 2>/dev/null || echo 'no docker'",
+        "echo DOCKER_END",
+    ])
+
+    t0 = _time.monotonic()
+    try:
+        res = ssh(dale, health_cmd, capture=True)
+        result_data["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+    except (subprocess.CalledProcessError, Exception):
+        result_data["status"] = "UNREACHABLE"
+        return result_data
+
+    output = res.stdout or ""
+    lines = output.splitlines()
+
+    # Parse sections
+    section = None
+    sections: dict[str, list[str]] = {
+        "uptime": [], "disk": [], "mem": [], "docker": [],
+    }
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "UPTIME_START":
+            section = "uptime"
+            continue
+        elif stripped == "UPTIME_END":
+            section = None
+            continue
+        elif stripped == "DISK_START":
+            section = "disk"
+            continue
+        elif stripped == "DISK_END":
+            section = None
+            continue
+        elif stripped == "MEM_START":
+            section = "mem"
+            continue
+        elif stripped == "MEM_END":
+            section = None
+            continue
+        elif stripped == "DOCKER_START":
+            section = "docker"
+            continue
+        elif stripped == "DOCKER_END":
+            section = None
+            continue
+        if section and stripped:
+            sections[section].append(stripped)
+
+    # Extract uptime + load
+    if sections["uptime"]:
+        uptime_line = sections["uptime"][0]
+        result_data["uptime"] = uptime_line
+        # Load average is at end of uptime output: "load average: 0.1, 0.2, 0.3"
+        if "load average:" in uptime_line:
+            load_part = uptime_line.split("load average:")[-1].strip()
+            result_data["load"] = load_part
+
+    # Disk
+    if sections["disk"]:
+        result_data["disk"] = "\n".join(sections["disk"])
+
+    # Memory
+    if sections["mem"]:
+        result_data["memory"] = "\n".join(sections["mem"])
+
+    # Docker
+    if sections["docker"]:
+        result_data["docker"] = "\n".join(sections["docker"])
+
+    return result_data
+
+
+def _print_dale_health(health: dict) -> None:
+    """Print a formatted health report for a single dale.
+
+    Args:
+        health: The health dict returned by _check_dale_health().
+    """
+    name = health["name"]
+    status = health["status"]
+
+    if status == "UNREACHABLE":
+        print(f"\n{'=' * 60}")
+        print(f"  {name:20s}  [UNREACHABLE]")
+        print(f"{'=' * 60}")
+        print("  Could not connect via SSH.")
+        return
+
+    latency = health["latency_ms"]
+    print(f"\n{'=' * 60}")
+    print(f"  {name:20s}  [OK] (SSH: {latency}ms)")
+    print(f"{'=' * 60}")
+
+    print(f"\n  Uptime / Load:")
+    print(f"    {health['uptime']}")
+
+    print(f"\n  Disk Usage:")
+    for line in health["disk"].splitlines():
+        print(f"    {line}")
+
+    print(f"\n  Memory:")
+    for line in health["memory"].splitlines():
+        print(f"    {line}")
+
+    print(f"\n  Docker:")
+    for line in health["docker"].splitlines():
+        print(f"    {line}")
+
+    print()
+
+
+def cmd_watchdog(args: argparse.Namespace) -> None:
+    """Check health of one or all dales, with optional reboot.
+
+    When called without a dale name, checks all configured dales and
+    prints a health summary for each. When called with a dale name,
+    checks that single dale. With --reboot --yes, reboots the dale
+    via ``sudo reboot``.
+    """
+    # Handle reboot case first
+    if getattr(args, "reboot", False):
+        if not args.dale:
+            err("--reboot requires a dale name")
+            sys.exit(1)
+        if not getattr(args, "yes", False):
+            err("--reboot requires --yes flag to confirm (e.g. sdale watchdog edge --reboot --yes)")
+            sys.exit(1)
+        dale = get_dale(args.dale)
+        print(f"WARNING: Rebooting {dale.name} ({dale.host})...")
+        try:
+            ssh(dale, "sudo reboot", capture=True)
+        except subprocess.CalledProcessError:
+            # reboot often kills the SSH connection mid-command, which is expected
+            pass
+        info(f"{dale.name} reboot command sent.")
+        return
+
+    # Health check mode
+    if args.dale:
+        # Single dale
+        dale = get_dale(args.dale)
+        health = _check_dale_health(dale)
+        _print_dale_health(health)
+    else:
+        # All dales
+        dales_map = list_dales()
+        if not dales_map:
+            err("No dales configured in sdale.json")
+            sys.exit(1)
+
+        print(f"\nChecking {len(dales_map)} dale(s)...")
+        summary = []
+        for name in sorted(dales_map.keys()):
+            try:
+                dale = get_dale(name)
+            except (KeyError, ValueError) as exc:
+                print(f"\n  {name}: config error -- {exc}")
+                summary.append((name, "CONFIG_ERROR"))
+                continue
+            health = _check_dale_health(dale)
+            _print_dale_health(health)
+            summary.append((name, health["status"]))
+
+        # Print summary table
+        print(f"\n{'=' * 60}")
+        print("  SUMMARY")
+        print(f"{'=' * 60}")
+        for name, status in summary:
+            icon = "\u2705" if status == "OK" else "\u274C"
+            print(f"  {icon}  {name:20s}  {status}")
+        print()
+
+
 # ── Argument parsing ─────────────────────────────────────────────────
 
 
@@ -1482,6 +1697,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("disconnect", help="Kill tmux session on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
 
+    # watchdog
+    p = sub.add_parser("watchdog", help="VPS health monitor + reboot command")
+    p.add_argument("dale", nargs="?", default="", help="Dale name (omit to check all)")
+    p.add_argument("--reboot", action="store_true", help="Reboot the dale (requires --yes)")
+    p.add_argument("--yes", action="store_true", help="Confirm reboot (required with --reboot)")
+
     # self — local introspection (no SSH, no dale config)
     p_self = sub.add_parser("self", help="Inspect local host (no SSH needed)")
     self_sub = p_self.add_subparsers(dest="action")
@@ -1530,6 +1751,7 @@ def main() -> None:
         "log": cmd_log,
         "networks": cmd_networks,
         "disconnect": cmd_disconnect,
+        "watchdog": cmd_watchdog,
         "self": cmd_self,
     }
 
