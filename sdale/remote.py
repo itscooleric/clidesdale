@@ -56,13 +56,14 @@ def ssh(dale: DaleConfig, command: str, capture: bool = False,
     _ensure_host_known(dale)
 
     if log:
-        log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+        log_file = dale.activity_log_path
+        log_dir = str(__import__("pathlib").PurePosixPath(log_file).parent)
         safe_cmd = command.replace("'", "'\\''")[:200]
         remote_cmd = (
-            f"mkdir -p /opt/stacks 2>/dev/null; "
-            f"echo '' >> {log_file}; "
-            f"echo '── '$(date +\"%H:%M:%S\")' $ {safe_cmd}' >> {log_file}; "
-            f"{{ {command} ; }} 2>&1 | tee -a {log_file}"
+            f"mkdir -p '{log_dir}' 2>/dev/null; "
+            f"echo '' >> '{log_file}'; "
+            f"echo '── '$(date +\"%H:%M:%S\")' $ {safe_cmd}' >> '{log_file}'; "
+            f"{{ {command} ; }} 2>&1 | tee -a '{log_file}'"
         )
     else:
         remote_cmd = command
