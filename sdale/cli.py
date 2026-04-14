@@ -20,6 +20,9 @@ Usage:
     sdale log <dale> [--full | --since DURATION]
     sdale networks <dale> [--compose-dir DIR] [--force-recreate]
     sdale disconnect <dale>
+    sdale self                                  # local environment summary
+    sdale self exec "<command>"                 # run command locally
+    sdale self docker                           # list local Docker containers
 """
 
 import argparse
@@ -1222,6 +1225,128 @@ def _parse_since(duration: str) -> datetime:
         raise ValueError(f"Unknown duration unit '{unit}'. Use m, h, or d")
 
 
+# ── Local execution (sdale self) ─────────────────────────────────────
+
+
+def _local_run(command: str, capture: bool = True) -> subprocess.CompletedProcess:
+    """Run a command locally via subprocess (no SSH).
+
+    Args:
+        command: Shell command string to execute.
+        capture: If True, capture stdout/stderr.
+
+    Returns:
+        CompletedProcess result.
+    """
+    return subprocess.run(
+        command, shell=True, capture_output=capture, text=True,
+    )
+
+
+def cmd_self(args: argparse.Namespace) -> None:
+    """Inspect the local host environment without SSH.
+
+    Runs introspection commands locally, giving the agent a quick
+    summary of its own container/host. Supports three modes:
+
+      sdale self              — print environment summary
+      sdale self exec "cmd"   — run an arbitrary local command
+      sdale self docker       — list local Docker containers
+
+    No dale config is needed — everything runs via subprocess.
+    """
+    action = getattr(args, "action", None)
+
+    # ── sdale self exec "<command>" ──────────────────────────────────
+    if action == "exec":
+        command = args.command
+        result = _local_run(command)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    # ── sdale self docker ────────────────────────────────────────────
+    if action == "docker":
+        result = _local_run("docker ps --format '{{.Names}}: {{.Status}}' 2>/dev/null")
+        if result.returncode != 0 or not result.stdout.strip():
+            info("Docker not available or no containers running")
+        else:
+            info("Docker containers:")
+            print(result.stdout, end="")
+        return
+
+    # ── sdale self (default summary) ─────────────────────────────────
+    sections: list[tuple[str, str]] = []
+
+    # Hostname
+    r = _local_run("hostname")
+    sections.append(("Hostname", r.stdout.strip() if r.returncode == 0 else "unknown"))
+
+    # OS / kernel
+    r = _local_run("uname -a")
+    sections.append(("OS", r.stdout.strip() if r.returncode == 0 else "unknown"))
+
+    # Uptime
+    r = _local_run("uptime -p 2>/dev/null || uptime")
+    sections.append(("Uptime", r.stdout.strip() if r.returncode == 0 else "unknown"))
+
+    # Disk
+    r = _local_run("df -h /")
+    if r.returncode == 0:
+        sections.append(("Disk (/)", r.stdout.strip()))
+
+    # Memory
+    r = _local_run("free -m 2>/dev/null")
+    if r.returncode == 0 and r.stdout.strip():
+        sections.append(("Memory", r.stdout.strip()))
+
+    # Docker containers
+    r = _local_run("docker ps --format '{{.Names}}: {{.Status}}' 2>/dev/null")
+    if r.returncode == 0 and r.stdout.strip():
+        sections.append(("Docker", r.stdout.strip()))
+    else:
+        sections.append(("Docker", "not available"))
+
+    # Network
+    r = _local_run("ip -br addr 2>/dev/null || hostname -I 2>/dev/null")
+    if r.returncode == 0 and r.stdout.strip():
+        sections.append(("Network", r.stdout.strip()))
+
+    # User / UID
+    r = _local_run("id")
+    if r.returncode == 0:
+        sections.append(("User", r.stdout.strip()))
+
+    # Python version
+    r = _local_run("python3 --version 2>/dev/null || python --version 2>/dev/null")
+    if r.returncode == 0:
+        sections.append(("Python", r.stdout.strip()))
+
+    # Key env vars
+    env_keys = ["OPERATOR_NAME", "IRC_NICK", "FIELD_NAME"]
+    env_vals = []
+    for key in env_keys:
+        val = os.environ.get(key)
+        if val:
+            env_vals.append(f"{key}={val}")
+    if env_vals:
+        sections.append(("Env", ", ".join(env_vals)))
+
+    # Print
+    info("Local environment summary")
+    print()
+    for label, value in sections:
+        if "\n" in value:
+            print(f"  {label}:")
+            for line in value.splitlines():
+                print(f"    {line}")
+        else:
+            print(f"  {label}: {value}")
+    print()
+
+
 # ── Argument parsing ─────────────────────────────────────────────────
 
 
@@ -1357,6 +1482,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("disconnect", help="Kill tmux session on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
 
+    # self — local introspection (no SSH, no dale config)
+    p_self = sub.add_parser("self", help="Inspect local host (no SSH needed)")
+    self_sub = p_self.add_subparsers(dest="action")
+    p_self_exec = self_sub.add_parser("exec", help="Run a command locally")
+    p_self_exec.add_argument("command", help="Command to run (quote it)")
+    self_sub.add_parser("docker", help="List local Docker containers")
+
     return parser
 
 
@@ -1398,6 +1530,7 @@ def main() -> None:
         "log": cmd_log,
         "networks": cmd_networks,
         "disconnect": cmd_disconnect,
+        "self": cmd_self,
     }
 
     handler = commands.get(args.subcmd)
