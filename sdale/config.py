@@ -33,6 +33,7 @@ class DaleConfig:
     key: str = ""
     session: str = ""
     exclude: list[str] = field(default_factory=lambda: ["node_modules", ".git"])
+    log_dir: str = ""
 
     def __post_init__(self) -> None:
         """Apply defaults and expand paths after initialization."""
@@ -41,6 +42,16 @@ class DaleConfig:
         # Expand ~ in key path
         if self.key:
             self.key = str(Path(self.key).expanduser())
+
+    @property
+    def activity_log_path(self) -> str:
+        """Build the path for the remote activity log file.
+
+        Uses log_dir from config if set, otherwise defaults to /tmp.
+        The log file name is .sdale-<dale-name>.log.
+        """
+        base = self.log_dir or "/tmp"
+        return f"{base}/.sdale-{self.name}.log"
 
     @property
     def ssh_dest(self) -> str:
@@ -162,6 +173,7 @@ def get_dale(name: str) -> DaleConfig:
         key=dale_raw.get("key", defaults.get("key", "")),
         session=dale_raw.get("session", ""),
         exclude=exclude,
+        log_dir=dale_raw.get("log_dir", defaults.get("log_dir", "")),
     )
 
     # Environment variable overrides (highest priority)
