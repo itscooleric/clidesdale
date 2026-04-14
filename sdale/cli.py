@@ -18,6 +18,7 @@ Usage:
     sdale status [dale]
     sdale list
     sdale log <dale> [--full | --since DURATION]
+    sdale networks <dale> [--compose-dir DIR] [--force-recreate]
     sdale disconnect <dale>
 """
 
@@ -1136,6 +1137,44 @@ def cmd_log(args: argparse.Namespace) -> None:
             print(line)
 
 
+def cmd_networks(args: argparse.Namespace) -> None:
+    """Reconnect Docker containers to their networks after a compose restart.
+
+    Runs ``docker compose up -d`` in the compose directory on the dale,
+    which reconciles container state (including network attachments) with
+    the compose file.  Use ``--force-recreate`` to force-recreate all
+    containers even if their configuration hasn't changed.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    compose_dir = getattr(args, "compose_dir", "/opt/stacks/clide")
+
+    cmd_parts = [f"cd {compose_dir}", "docker compose up -d"]
+    if getattr(args, "force_recreate", False):
+        cmd_parts[-1] += " --force-recreate"
+    remote_cmd = " && ".join(cmd_parts)
+
+    info(f"Reconnecting containers on '{dale.name}' (compose dir: {compose_dir})")
+    try:
+        result = ssh(dale, remote_cmd, capture=True, log=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            # docker compose up prints progress to stderr normally
+            print(result.stderr, end="")
+        logger.log("dale_networks", compose_dir=compose_dir, exit_code="0")
+        info("Network reconnection complete")
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
+        logger.log("dale_networks", compose_dir=compose_dir,
+                    exit_code=str(exc.returncode))
+        err(f"docker compose up failed (exit {exc.returncode})")
+        sys.exit(exc.returncode)
+
+
 def cmd_disconnect(args: argparse.Namespace) -> None:
     """Kill the tmux session on a dale."""
     dale = get_dale(args.dale)
@@ -1306,6 +1345,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Show full log")
     p.add_argument("--since", metavar="DUR", help="Filter by duration (e.g. 1h, 30m, 2d)")
 
+    # networks
+    p = sub.add_parser("networks", help="Reconnect containers to networks after compose restart")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("--compose-dir", default="/opt/stacks/clide",
+                    help="Compose directory on the dale (default: /opt/stacks/clide)")
+    p.add_argument("--force-recreate", action="store_true",
+                    help="Force-recreate all containers")
+
     # disconnect
     p = sub.add_parser("disconnect", help="Kill tmux session on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -1349,6 +1396,7 @@ def main() -> None:
         "status": cmd_status,
         "list": cmd_list,
         "log": cmd_log,
+        "networks": cmd_networks,
         "disconnect": cmd_disconnect,
     }
 
