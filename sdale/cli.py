@@ -37,6 +37,14 @@ from pathlib import Path
 from . import __version__
 from .config import DaleConfig, get_dale, list_dales, find_config_path
 from .logger import EventLogger
+from .docker import (
+    add_docker_subparser,
+    cmd_docker_inspect,
+    cmd_docker_logs,
+    cmd_docker_ps,
+    cmd_docker_restart,
+    cmd_docker_stats,
+)
 from .remote import (
     rsync,
     scp_from,
@@ -76,7 +84,7 @@ def _install_watch_script(dale: DaleConfig) -> None:
 
     Idempotent — only writes once.
     """
-    script_path = "/opt/stacks/.sdale-watch"
+    script_path = f"{str(Path(dale.activity_log_path).parent)}/.sdale-watch"
     try:
         result = ssh(dale, f"test -x {script_path} && echo exists || echo missing", capture=True)
         if "exists" in result.stdout:
@@ -142,9 +150,9 @@ def cmd_connect(args: argparse.Namespace) -> None:
     tmux_ensure(dale)
 
     # Initialize the activity log in the shared volume (visible inside containers)
-    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    log_file = dale.activity_log_path
     try:
-        ssh(dale, f"mkdir -p /opt/stacks 2>/dev/null; touch {log_file} && echo '── sdale connected ({dale.name}) ──' >> {log_file}", capture=True)
+        ssh(dale, f"mkdir -p $(dirname '{log_file}') 2>/dev/null; touch '{log_file}' && echo '── sdale connected ({dale.name}) ──' >> '{log_file}'", capture=True)
     except subprocess.CalledProcessError:
         pass
 
@@ -164,13 +172,13 @@ def cmd_watch(args: argparse.Namespace) -> None:
     output. Ctrl-c to stop watching.
     """
     dale = get_dale(args.dale)
-    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    log_file = dale.activity_log_path
 
     info(f"Watching dale '{dale.name}' — Ctrl-c to stop")
     print()
 
     cmd = ["ssh", *dale.ssh_args, "-t", dale.ssh_dest,
-           f"touch {log_file} && tail -f {log_file}"]
+           f"touch '{log_file}' && tail -f '{log_file}'"]
     try:
         os.execvp("ssh", cmd)
     except KeyboardInterrupt:
@@ -326,6 +334,55 @@ def cmd_write(args: argparse.Namespace) -> None:
     size = len(content)
     logger.log("dale_write", path=remote_path, bytes=str(size))
     info(f"Wrote {size} bytes → {dale.name}:{remote_path}")
+
+
+def cmd_script(args: argparse.Namespace) -> None:
+    """Upload a local script to the dale and run it.
+
+    Copies the script to a temp file on the dale, makes it executable,
+    runs it with the provided arguments, then cleans up. Output streams
+    directly to stdout/stderr.
+
+    Examples::
+
+        sdale script edge ./setup.sh
+        sdale script mesa ./deploy.py --env prod
+        sdale script core ./check.sh arg1 arg2
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    local_script = args.script
+    script_args = args.script_args or []
+
+    if not Path(local_script).is_file():
+        err(f"Script not found: {local_script}")
+        sys.exit(1)
+
+    # Determine interpreter from shebang or extension
+    ext = Path(local_script).suffix
+    remote_tmp = f"/tmp/.sdale-script-{os.getpid()}{ext or '.sh'}"
+
+    # Upload
+    scp_to(dale, local_script, remote_tmp)
+
+    # Make executable and run
+    args_str = " ".join(f"'{a}'" for a in script_args)
+    run_cmd = f"chmod +x '{remote_tmp}' && '{remote_tmp}' {args_str}; _rc=$?; rm -f '{remote_tmp}'; exit $_rc"
+
+    try:
+        result = ssh(dale, run_cmd, capture=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        logger.log("dale_script", script=local_script, exit_code="0")
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
+        logger.log("dale_script", script=local_script, exit_code=str(exc.returncode))
+        sys.exit(exc.returncode)
 
 
 def cmd_logs(args: argparse.Namespace) -> None:
@@ -1006,10 +1063,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     command = args.command
 
     # Log to activity file so watchers see run commands too
-    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    log_file = dale.activity_log_path
     safe = command.replace("'", "'\\''")[:200]
     try:
-        ssh(dale, f"echo '\\n── '$(date +\"%H:%M:%S\")' ── [run] $ {safe}' >> {log_file}", capture=True)
+        ssh(dale, f"echo '\\n── '$(date +\"%H:%M:%S\")' ── [run] $ {safe}' >> '{log_file}'", capture=True)
     except subprocess.CalledProcessError:
         pass
 
@@ -1619,6 +1676,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from", dest="from_file", metavar="FILE",
                     help="Read from local file instead of stdin")
 
+    # script
+    p = sub.add_parser("script", help="Upload and run a local script on a dale")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("script", help="Local script file to upload and run")
+    p.add_argument("script_args", nargs="*", help="Arguments to pass to the script")
+
     # logs
     p = sub.add_parser("logs", help="View container logs on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
@@ -1710,6 +1773,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_self_exec.add_argument("command", help="Command to run (quote it)")
     self_sub.add_parser("docker", help="List local Docker containers")
 
+    # docker (subcommand group)
+    add_docker_subparser(sub)
+
     return parser
 
 
@@ -1738,6 +1804,7 @@ def main() -> None:
         "pull": cmd_pull,
         "cat": cmd_cat,
         "write": cmd_write,
+        "script": cmd_script,
         "logs": cmd_logs,
         "multi": cmd_multi,
         "info": cmd_info,
@@ -1754,6 +1821,44 @@ def main() -> None:
         "watchdog": cmd_watchdog,
         "self": cmd_self,
     }
+
+    # Docker subcommand group — needs special dispatch
+    if args.subcmd == "docker":
+        docker_commands = {
+            "ps": cmd_docker_ps,
+            "logs": cmd_docker_logs,
+            "inspect": cmd_docker_inspect,
+            "stats": cmd_docker_stats,
+            "restart": cmd_docker_restart,
+        }
+        docker_cmd = getattr(args, "docker_cmd", None)
+        if not docker_cmd:
+            # Print docker subcommand help
+            for action in parser._subparsers._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    docker_parser = action.choices.get("docker")
+                    if docker_parser:
+                        docker_parser.print_help()
+                        break
+            sys.exit(0)
+        docker_handler = docker_commands.get(docker_cmd)
+        if docker_handler is None:
+            sys.exit(1)
+        dale = get_dale(args.dale)
+        try:
+            docker_handler(args, dale)
+        except subprocess.CalledProcessError as exc:
+            cmd_name = Path(exc.cmd[0]).name if exc.cmd else "command"
+            if cmd_name == "ssh":
+                err(f"SSH connection failed (exit {exc.returncode}). Is the dale reachable?")
+                if exc.stderr:
+                    err(exc.stderr.strip())
+            else:
+                err(f"{cmd_name} failed (exit {exc.returncode})")
+            sys.exit(exc.returncode)
+        except KeyboardInterrupt:
+            sys.exit(130)
+        return
 
     handler = commands.get(args.subcmd)
     if handler is None:

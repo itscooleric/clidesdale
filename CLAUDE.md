@@ -68,6 +68,12 @@ sdale status [dale]               # show dale status
 sdale list                        # list configured dales
 sdale log <dale>                  # show event log
 sdale disconnect <dale>           # kill tmux session
+# Docker diagnostics (with blacklist + ACL)
+sdale docker ps <dale> [--all]              # list containers (green-tier)
+sdale docker logs <dale> <ctr> [--tail N]   # container logs (green-tier)
+sdale docker inspect <dale> <ctr>           # inspect container (green-tier)
+sdale docker stats <dale>                   # resource usage (green-tier)
+sdale docker restart <dale> <ctr> --confirm # restart container (yellow-tier)
 ```
 
 ## Rules
