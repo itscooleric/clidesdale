@@ -34,6 +34,9 @@ class DaleConfig:
     session: str = ""
     exclude: list[str] = field(default_factory=lambda: ["node_modules", ".git"])
     log_dir: str = ""
+    docker_user: str = ""
+    docker_blacklist: list[str] = field(default_factory=list)
+    allowed_operators: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Apply defaults and expand paths after initialization."""
@@ -42,6 +45,18 @@ class DaleConfig:
         # Expand ~ in key path
         if self.key:
             self.key = str(Path(self.key).expanduser())
+
+    def for_docker(self) -> "DaleConfig":
+        """Return a copy with user swapped to docker_user (if configured).
+
+        If no docker_user is set, returns self unchanged — commands will
+        run as the default dale user (and may fail if that user lacks
+        Docker socket access, which is the expected safety behavior).
+        """
+        if not self.docker_user:
+            return self
+        from dataclasses import replace
+        return replace(self, user=self.docker_user)
 
     @property
     def activity_log_path(self) -> str:
@@ -174,6 +189,11 @@ def get_dale(name: str) -> DaleConfig:
         session=dale_raw.get("session", ""),
         exclude=exclude,
         log_dir=dale_raw.get("log_dir", defaults.get("log_dir", "")),
+        docker_user=dale_raw.get("docker_user", defaults.get("docker_user", "")),
+        docker_blacklist=dale_raw.get("docker_blacklist",
+                                      defaults.get("docker_blacklist", [])),
+        allowed_operators=dale_raw.get("allowed_operators",
+                                       defaults.get("allowed_operators", [])),
     )
 
     # Environment variable overrides (highest priority)

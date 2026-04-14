@@ -32,6 +32,14 @@ from pathlib import Path
 from . import __version__
 from .config import DaleConfig, get_dale, list_dales, find_config_path
 from .logger import EventLogger
+from .docker import (
+    add_docker_subparser,
+    cmd_docker_inspect,
+    cmd_docker_logs,
+    cmd_docker_ps,
+    cmd_docker_restart,
+    cmd_docker_stats,
+)
 from .remote import (
     rsync,
     scp_from,
@@ -1365,6 +1373,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("disconnect", help="Kill tmux session on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
 
+    # docker (subcommand group)
+    add_docker_subparser(sub)
+
     return parser
 
 
@@ -1407,6 +1418,44 @@ def main() -> None:
         "log": cmd_log,
         "disconnect": cmd_disconnect,
     }
+
+    # Docker subcommand group — needs special dispatch
+    if args.subcmd == "docker":
+        docker_commands = {
+            "ps": cmd_docker_ps,
+            "logs": cmd_docker_logs,
+            "inspect": cmd_docker_inspect,
+            "stats": cmd_docker_stats,
+            "restart": cmd_docker_restart,
+        }
+        docker_cmd = getattr(args, "docker_cmd", None)
+        if not docker_cmd:
+            # Print docker subcommand help
+            for action in parser._subparsers._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    docker_parser = action.choices.get("docker")
+                    if docker_parser:
+                        docker_parser.print_help()
+                        break
+            sys.exit(0)
+        docker_handler = docker_commands.get(docker_cmd)
+        if docker_handler is None:
+            sys.exit(1)
+        dale = get_dale(args.dale)
+        try:
+            docker_handler(args, dale)
+        except subprocess.CalledProcessError as exc:
+            cmd_name = Path(exc.cmd[0]).name if exc.cmd else "command"
+            if cmd_name == "ssh":
+                err(f"SSH connection failed (exit {exc.returncode}). Is the dale reachable?")
+                if exc.stderr:
+                    err(exc.stderr.strip())
+            else:
+                err(f"{cmd_name} failed (exit {exc.returncode})")
+            sys.exit(exc.returncode)
+        except KeyboardInterrupt:
+            sys.exit(130)
+        return
 
     handler = commands.get(args.subcmd)
     if handler is None:
