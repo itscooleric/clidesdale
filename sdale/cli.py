@@ -797,9 +797,9 @@ def cmd_probe(args: argparse.Namespace) -> None:
     Examples::
 
         sdale probe edge                          # overview
-        sdale probe edge --dns git.lan.wubi.sh    # resolve hostname
+        sdale probe edge --dns git.example.com     # resolve hostname
         sdale probe edge --ping 8.8.8.8           # connectivity test
-        sdale probe edge --reach hub.edge.wubi.sh # HTTP reachability
+        sdale probe edge --reach hub.example.com  # HTTP reachability
         sdale probe edge --ports 80,443,7681      # check listening ports
     """
     dale = get_dale(args.dale)
