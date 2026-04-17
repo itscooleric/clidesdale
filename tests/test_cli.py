@@ -420,12 +420,12 @@ class TestInfoSubcommand(unittest.TestCase):
         mock_get.return_value = dale_mock
         mock_ssh.return_value = subprocess.CompletedProcess(
             [], 0, stdout=(
-                "HOSTNAME=forge-edge\nKERNEL=6.1.0\nOS=Ubuntu 24.04\nARCH=x86_64\n"
+                "HOSTNAME=my-vps\nKERNEL=6.1.0\nOS=Ubuntu 24.04\nARCH=x86_64\n"
                 "UPTIME=up 3 days\nLOAD=0.05 0.03 0.01\nCPUS=2\nCPU_MODEL=Xeon\n"
                 "MEM_TOTAL=4096\nMEM_USED=1024\nMEM_AVAIL=2800\n"
                 "SWAP_TOTAL=0\nSWAP_USED=0\n"
                 "DISK_INFO_START\n/  50G  8G  40G  16%\nDISK_INFO_END\n"
-                "TAILSCALE_IP=100.95.91.31\nTAILSCALE_STATUS=true\n"
+                "TAILSCALE_IP=198.51.100.10\nTAILSCALE_STATUS=true\n"
             )
         )
         args = MagicMock()
@@ -439,7 +439,7 @@ class TestInfoSubcommand(unittest.TestCase):
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
             cmd_info(args)
             output = mock_out.getvalue()
-        self.assertIn("forge-edge", output)
+        self.assertIn("my-vps", output)
         self.assertIn("1024MB / 4096MB", output)
 
     @patch("sdale.cli.EventLogger")
@@ -529,12 +529,12 @@ class TestProbeSubcommand(unittest.TestCase):
                 "DNS_END\n"
                 "IP_START\n"
                 "ens6 10.0.0.5/24\n"
-                "tailscale0 100.95.91.31/32\n"
+                "tailscale0 198.51.100.10/32\n"
                 "IP_END\n"
                 "ROUTE=default via 10.0.0.1 dev ens6\n"
                 "GW=10.0.0.1\n"
                 "GW_PING=ok\n"
-                "TS_IP=100.95.91.31\n"
+                "TS_IP=198.51.100.10\n"
                 "TS_STATUS=true\n"
                 "PUB_IP=66.179.138.11\n"
                 "INET_CHECK=200\n"
@@ -553,7 +553,7 @@ class TestProbeSubcommand(unittest.TestCase):
             output = mock_out.getvalue()
 
         self.assertIn("edge", output)
-        self.assertIn("100.95.91.31", output)
+        self.assertIn("198.51.100.10", output)
         self.assertIn("10.0.0.1", output)
         self.assertIn("200", output)
 
