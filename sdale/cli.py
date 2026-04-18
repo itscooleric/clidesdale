@@ -1619,6 +1619,94 @@ def cmd_watchdog(args: argparse.Namespace) -> None:
         print()
 
 
+# ── Mode management ──────────────────────────────────────────────────
+
+
+def _detect_mode(dale: DaleConfig) -> str:
+    """Auto-detect the appropriate mode based on Eric's presence.
+
+    Detection order:
+      1. Eric attached to tmux session → unrestricted
+      2. Eric detached but Tailscale connected → supervised
+      3. Eric offline (Tailscale disconnected) → locked
+    """
+    try:
+        # Check tmux client attachment
+        result = ssh(dale, f"tmux list-clients -t {dale.session} 2>/dev/null || true",
+                     capture=True)
+        if result.stdout and "eric" in result.stdout.lower():
+            return "unrestricted"
+    except (subprocess.CalledProcessError, Exception):
+        pass
+
+    try:
+        # Check Tailscale peer status for Eric's devices
+        result = ssh(dale, "tailscale status 2>/dev/null | head -20 || true",
+                     capture=True)
+        if result.stdout and "online" in result.stdout.lower():
+            return "supervised"
+    except (subprocess.CalledProcessError, Exception):
+        pass
+
+    return "locked"
+
+
+def _get_mode_file(dale_name: str) -> Path:
+    """Return the path to the mode state file for a dale."""
+    mode_dir = Path.home() / ".config" / "sdale" / "modes"
+    mode_dir.mkdir(parents=True, exist_ok=True)
+    return mode_dir / f"{dale_name}.mode"
+
+
+def _read_mode(dale: DaleConfig) -> str:
+    """Read the current mode for a dale from config or state file.
+
+    Priority: state file > config > default (supervised).
+    """
+    mode_file = _get_mode_file(dale.name)
+    if mode_file.exists():
+        stored = mode_file.read_text().strip()
+        if stored in ("unrestricted", "supervised", "locked"):
+            return stored
+    if dale.mode and dale.mode in ("unrestricted", "supervised", "locked"):
+        return dale.mode
+    return "supervised"
+
+
+def _write_mode(dale_name: str, mode: str) -> None:
+    """Persist the mode for a dale to the state file."""
+    mode_file = _get_mode_file(dale_name)
+    mode_file.write_text(mode + "\n")
+
+
+def cmd_mode(args: argparse.Namespace) -> None:
+    """Get or set the operating mode for a dale.
+
+    Modes:
+      unrestricted — full shell access, no staging (Eric present)
+      supervised   — draft/approve for mutations (Eric reviewing remotely)
+      locked       — read-only, no execution (Eric offline)
+      auto         — detect mode from Eric's tmux/Tailscale presence
+    """
+    dale = get_dale(args.dale)
+    new_mode = args.new_mode
+
+    if not new_mode:
+        # Display current mode
+        current = _read_mode(dale)
+        print(f"Dale '{dale.name}' mode: {current}")
+        return
+
+    if new_mode == "auto":
+        detected = _detect_mode(dale)
+        _write_mode(dale.name, detected)
+        print(f"Dale '{dale.name}' mode auto-detected: {detected}")
+        return
+
+    _write_mode(dale.name, new_mode)
+    print(f"Dale '{dale.name}' mode set to: {new_mode}")
+
+
 # ── Argument parsing ─────────────────────────────────────────────────
 
 
@@ -1773,6 +1861,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_self_exec.add_argument("command", help="Command to run (quote it)")
     self_sub.add_parser("docker", help="List local Docker containers")
 
+    # mode
+    p = sub.add_parser("mode", help="Get or set operating mode for a dale")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("new_mode", nargs="?", default="",
+                    choices=["unrestricted", "supervised", "locked", "auto", ""],
+                    help="Mode to set (unrestricted/supervised/locked/auto)")
+
     # docker (subcommand group)
     add_docker_subparser(sub)
 
@@ -1820,6 +1915,7 @@ def main() -> None:
         "disconnect": cmd_disconnect,
         "watchdog": cmd_watchdog,
         "self": cmd_self,
+        "mode": cmd_mode,
     }
 
     # Docker subcommand group — needs special dispatch

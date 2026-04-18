@@ -7,7 +7,12 @@
       "session": "work",
       "docker_user": "docker-ops",
       "docker_blacklist": ["critical-db", "vault"],
-      "allowed_operators": []
+      "allowed_operators": ["sentinel", "lead", "dubs", "larry"],
+      "operator_tiers": {
+        "full": ["sentinel", "lead"],
+        "readonly": ["dubs", "larry"]
+      },
+      "mode": "supervised"
     }
   },
   "defaults": {

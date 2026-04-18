@@ -37,6 +37,8 @@ class DaleConfig:
     docker_user: str = ""
     docker_blacklist: list[str] = field(default_factory=list)
     allowed_operators: list[str] = field(default_factory=list)
+    operator_tiers: dict[str, list[str]] = field(default_factory=dict)
+    mode: str = ""
 
     def __post_init__(self) -> None:
         """Apply defaults and expand paths after initialization."""
@@ -194,6 +196,9 @@ def get_dale(name: str) -> DaleConfig:
                                       defaults.get("docker_blacklist", [])),
         allowed_operators=dale_raw.get("allowed_operators",
                                        defaults.get("allowed_operators", [])),
+        operator_tiers=dale_raw.get("operator_tiers",
+                                     defaults.get("operator_tiers", {})),
+        mode=dale_raw.get("mode", defaults.get("mode", "")),
     )
 
     # Environment variable overrides (highest priority)

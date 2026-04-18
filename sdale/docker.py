@@ -1,4 +1,4 @@
-"""Docker container diagnostics with blacklist and ACL enforcement.
+"""Docker container diagnostics with blacklist, ACL, and tiered permissions.
 
 Provides safe, audited Docker access through sdale. Commands are tiered:
 
@@ -10,6 +10,8 @@ Per-dale configuration in sdale.json:
   "docker_user":        SSH user with Docker socket access
   "docker_blacklist":   Container names that cannot be restarted
   "allowed_operators":  Operators permitted to use docker commands (empty = all)
+  "operator_tiers":     Permission tiers: {"full": [...], "readonly": [...]}
+  "mode":               Operating mode: unrestricted/supervised/locked
 """
 
 import argparse
@@ -25,24 +27,63 @@ import subprocess
 # ── Access control ──────────────────────────────────────────────────
 
 
-def _check_operator_acl(dale: DaleConfig) -> None:
-    """Deny access if the current operator is not in the dale's allowed list.
+def _get_operator_tier(dale: DaleConfig, operator: str) -> str:
+    """Determine the operator's permission tier.
 
-    If allowed_operators is empty, all operators are permitted.
+    Returns:
+        "full" — green + yellow commands allowed
+        "readonly" — green commands only
+        "none" — no docker access
+    """
+    tiers = dale.operator_tiers
+    if not tiers:
+        # No tiers configured — fall back to allowed_operators behavior
+        if not dale.allowed_operators:
+            return "full"  # empty = all operators, full access
+        if operator in dale.allowed_operators:
+            return "full"
+        return "none"
+
+    if operator in tiers.get("full", []):
+        return "full"
+    if operator in tiers.get("readonly", []):
+        return "readonly"
+    return "none"
+
+
+def _check_operator_acl(dale: DaleConfig, require_tier: str = "readonly") -> str:
+    """Check operator ACL and return the operator's tier.
+
+    Args:
+        dale: Dale configuration.
+        require_tier: Minimum tier required ("readonly" or "full").
+
+    Returns:
+        The operator's tier string.
 
     Raises:
-        SystemExit: If the operator is not allowed.
+        SystemExit: If the operator lacks the required tier.
     """
-    if not dale.allowed_operators:
-        return
     operator = detect_operator()
-    if operator not in dale.allowed_operators:
+    tier = _get_operator_tier(dale, operator)
+
+    if tier == "none":
         print(
-            f"sdale: operator '{operator}' is not in allowed_operators "
-            f"for dale '{dale.name}'. Allowed: {', '.join(dale.allowed_operators)}",
+            f"sdale: operator '{operator}' has no docker access "
+            f"on dale '{dale.name}'.",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if require_tier == "full" and tier == "readonly":
+        print(
+            f"sdale: operator '{operator}' has readonly docker access "
+            f"on dale '{dale.name}'. This command requires full tier.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return tier
 
 
 def _check_blacklist(dale: DaleConfig, container: str, action: str) -> None:
@@ -60,13 +101,60 @@ def _check_blacklist(dale: DaleConfig, container: str, action: str) -> None:
         sys.exit(1)
 
 
+def _resolve_mode(dale: DaleConfig) -> str:
+    """Resolve the current mode from state file or config.
+
+    Priority: state file > config > default (no restriction).
+    """
+    from pathlib import Path
+    mode_file = Path.home() / ".config" / "sdale" / "modes" / f"{dale.name}.mode"
+    if mode_file.exists():
+        stored = mode_file.read_text().strip()
+        if stored in ("unrestricted", "supervised", "locked"):
+            return stored
+    return dale.mode or ""
+
+
+def _check_mode(dale: DaleConfig, command_type: str) -> None:
+    """Enforce mode restrictions on docker commands.
+
+    Args:
+        dale: Dale configuration.
+        command_type: "read" for green-tier, "mutate" for yellow-tier.
+
+    Raises:
+        SystemExit: If mode blocks the command.
+    """
+    mode = _resolve_mode(dale)
+    if not mode or mode == "unrestricted":
+        return
+
+    if mode == "locked":
+        print(
+            f"sdale: dale '{dale.name}' is in locked mode. "
+            f"No docker commands allowed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if mode == "supervised" and command_type == "mutate":
+        print(
+            f"sdale: dale '{dale.name}' is in supervised mode. "
+            f"Mutations require escalation to unrestricted mode first.\n"
+            f"  Use: sdale mode {dale.name} unrestricted",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 # ── Green-tier commands (read-only) ────────────────────────────────
 
 
 def cmd_docker_ps(args: argparse.Namespace, dale: DaleConfig) -> None:
     """List containers on the dale."""
     logger = EventLogger(dale.name)
-    _check_operator_acl(dale)
+    _check_mode(dale, "read")
+    _check_operator_acl(dale, require_tier="readonly")
 
     docker_dale = dale.for_docker()
     cmd = "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'"
@@ -90,7 +178,8 @@ def cmd_docker_ps(args: argparse.Namespace, dale: DaleConfig) -> None:
 def cmd_docker_logs(args: argparse.Namespace, dale: DaleConfig) -> None:
     """View container logs on the dale."""
     logger = EventLogger(dale.name)
-    _check_operator_acl(dale)
+    _check_mode(dale, "read")
+    _check_operator_acl(dale, require_tier="readonly")
 
     container = args.container
     docker_dale = dale.for_docker()
@@ -129,7 +218,8 @@ def cmd_docker_logs(args: argparse.Namespace, dale: DaleConfig) -> None:
 def cmd_docker_inspect(args: argparse.Namespace, dale: DaleConfig) -> None:
     """Inspect a container on the dale."""
     logger = EventLogger(dale.name)
-    _check_operator_acl(dale)
+    _check_mode(dale, "read")
+    _check_operator_acl(dale, require_tier="readonly")
 
     container = args.container
     docker_dale = dale.for_docker()
@@ -151,7 +241,8 @@ def cmd_docker_inspect(args: argparse.Namespace, dale: DaleConfig) -> None:
 def cmd_docker_stats(args: argparse.Namespace, dale: DaleConfig) -> None:
     """Show container resource usage on the dale."""
     logger = EventLogger(dale.name)
-    _check_operator_acl(dale)
+    _check_mode(dale, "read")
+    _check_operator_acl(dale, require_tier="readonly")
 
     docker_dale = dale.for_docker()
     cmd = "docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.PIDs}}' 2>&1"
@@ -174,9 +265,10 @@ def cmd_docker_stats(args: argparse.Namespace, dale: DaleConfig) -> None:
 
 
 def cmd_docker_restart(args: argparse.Namespace, dale: DaleConfig) -> None:
-    """Restart a container on the dale (requires --confirm)."""
+    """Restart a container on the dale (requires --confirm + full tier)."""
     logger = EventLogger(dale.name)
-    _check_operator_acl(dale)
+    _check_mode(dale, "mutate")
+    _check_operator_acl(dale, require_tier="full")
 
     container = args.container
     _check_blacklist(dale, container, "restart")
@@ -246,7 +338,7 @@ def add_docker_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("dale", help="Dale name from sdale.json")
 
     # restart (yellow-tier)
-    p = docker_sub.add_parser("restart", help="Restart a container (yellow-tier, requires --confirm)")
+    p = docker_sub.add_parser("restart", help="Restart a container (yellow-tier, requires --confirm + full tier)")
     p.add_argument("dale", help="Dale name from sdale.json")
     p.add_argument("container", help="Container name")
     p.add_argument("--confirm", action="store_true", help="Confirm restart (required)")
