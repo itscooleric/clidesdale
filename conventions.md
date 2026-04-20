@@ -52,7 +52,7 @@ sdale finds `sdale.json` by walking up directories (like git finds `.git`). Over
 ### Activation
 
 ```bash
-source /workspace/clide-sdale/bin/activate.sh
+source ./bin/activate.sh
 # Now `sdale` is on PATH and PYTHONPATH is set
 ```
 

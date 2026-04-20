@@ -1623,24 +1623,27 @@ def cmd_watchdog(args: argparse.Namespace) -> None:
 
 
 def _detect_mode(dale: DaleConfig) -> str:
-    """Auto-detect the appropriate mode based on Eric's presence.
+    """Auto-detect the appropriate mode based on the owner's presence.
+
+    The owner identity is read from $SDALE_OWNER (default: "owner").
 
     Detection order:
-      1. Eric attached to tmux session → unrestricted
-      2. Eric detached but Tailscale connected → supervised
-      3. Eric offline (Tailscale disconnected) → locked
+      1. Owner attached to tmux session → unrestricted
+      2. Owner detached but Tailscale connected → supervised
+      3. Owner offline (Tailscale disconnected) → locked
     """
+    owner = os.environ.get("SDALE_OWNER", "owner").lower()
     try:
         # Check tmux client attachment
         result = ssh(dale, f"tmux list-clients -t {dale.session} 2>/dev/null || true",
                      capture=True)
-        if result.stdout and "eric" in result.stdout.lower():
+        if result.stdout and owner in result.stdout.lower():
             return "unrestricted"
     except (subprocess.CalledProcessError, Exception):
         pass
 
     try:
-        # Check Tailscale peer status for Eric's devices
+        # Check Tailscale peer status for owner's devices
         result = ssh(dale, "tailscale status 2>/dev/null | head -20 || true",
                      capture=True)
         if result.stdout and "online" in result.stdout.lower():
@@ -1683,10 +1686,10 @@ def cmd_mode(args: argparse.Namespace) -> None:
     """Get or set the operating mode for a dale.
 
     Modes:
-      unrestricted — full shell access, no staging (Eric present)
-      supervised   — draft/approve for mutations (Eric reviewing remotely)
-      locked       — read-only, no execution (Eric offline)
-      auto         — detect mode from Eric's tmux/Tailscale presence
+      unrestricted — full shell access, no staging (owner present)
+      supervised   — draft/approve for mutations (owner reviewing remotely)
+      locked       — read-only, no execution (owner offline)
+      auto         — detect mode from owner's tmux/Tailscale presence
     """
     dale = get_dale(args.dale)
     new_mode = args.new_mode

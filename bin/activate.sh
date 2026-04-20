@@ -1,6 +1,6 @@
 #!/bin/bash
 # clidesdale activate — self-injects into the shell environment.
-# Sourced automatically by clide .bashrc if present at /workspace/clide-sdale/bin/activate.sh
+# Sourced automatically if present in your shell profile (e.g. source <repo>/bin/activate.sh)
 
 _SDALE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
