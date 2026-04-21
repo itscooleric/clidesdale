@@ -455,7 +455,7 @@ class TestInfoSubcommand(unittest.TestCase):
                           "UPTIME=up 1 day\nLOAD=0.1\nCPUS=2\nCPU_MODEL=Xeon\n"
                           "MEM_TOTAL=4096\nMEM_USED=1024\nMEM_AVAIL=2800\n"
                           "SWAP_TOTAL=0\nSWAP_USED=0\n"
-                          "TAILSCALE_IP=100.1.2.3\nTAILSCALE_STATUS=true\n"
+                          "TAILSCALE_IP=198.51.100.20\nTAILSCALE_STATUS=true\n"
         )
         args = MagicMock()
         args.dale = "edge"
