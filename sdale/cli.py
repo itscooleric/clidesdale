@@ -394,8 +394,8 @@ def cmd_logs(args: argparse.Namespace) -> None:
 
     Examples::
 
-        sdale logs edge cloperator
-        sdale logs edge clem --tail 100
+        sdale logs edge mycontainer
+        sdale logs edge myapp --tail 100
         sdale logs core homeassistant --since 1h
         sdale logs edge clide-web-1 --follow
     """

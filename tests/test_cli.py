@@ -51,11 +51,11 @@ class TestBuildParser(unittest.TestCase):
 
     def test_push_subcommand(self) -> None:
         """'push' subcommand parses dale, src, and dst."""
-        args = self.parser.parse_args(["push", "edge", ".env", "/opt/stacks/clem/.env"])
+        args = self.parser.parse_args(["push", "edge", ".env", "/opt/stacks/myapp/.env"])
         self.assertEqual(args.subcmd, "push")
         self.assertEqual(args.dale, "edge")
         self.assertEqual(args.src, ".env")
-        self.assertEqual(args.dst, "/opt/stacks/clem/.env")
+        self.assertEqual(args.dst, "/opt/stacks/myapp/.env")
 
     def test_run_subcommand(self) -> None:
         """'run' subcommand parses dale name and command."""
@@ -350,16 +350,16 @@ class TestLogsSubcommand(unittest.TestCase):
 
     def test_logs_parses_container(self) -> None:
         """'logs' parses dale and container name."""
-        args = self.parser.parse_args(["logs", "edge", "cloperator"])
+        args = self.parser.parse_args(["logs", "edge", "mycontainer"])
         self.assertEqual(args.subcmd, "logs")
         self.assertEqual(args.dale, "edge")
-        self.assertEqual(args.container, "cloperator")
+        self.assertEqual(args.container, "mycontainer")
         self.assertEqual(args.tail, 50)
         self.assertFalse(args.follow)
 
     def test_logs_with_options(self) -> None:
         """'logs' parses --tail, --since, --follow."""
-        args = self.parser.parse_args(["logs", "edge", "clem", "-n", "100", "--since", "1h", "-f"])
+        args = self.parser.parse_args(["logs", "edge", "myapp", "-n", "100", "--since", "1h", "-f"])
         self.assertEqual(args.tail, 100)
         self.assertEqual(args.since, "1h")
         self.assertTrue(args.follow)
@@ -818,7 +818,7 @@ class TestCmdHealth(unittest.TestCase):
             subprocess.CompletedProcess([], 0, stdout="ok\n"),
             subprocess.CompletedProcess([], 0, stdout=(
                 "LOAD=0.1\nDISK=30%\nUP=up 5d\ntmux:yes\n"
-                "DOCKER_START\nclide:Up 2 hours\ncloperator:Up 2 hours\nDOCKER_END\n"
+                "DOCKER_START\nclide:Up 2 hours\nmycontainer:Up 2 hours\nDOCKER_END\n"
             )),
         ]
 
@@ -832,7 +832,7 @@ class TestCmdHealth(unittest.TestCase):
         output = mock_out.getvalue()
         self.assertIn("Containers (2)", output)
         self.assertIn("clide:Up 2 hours", output)
-        self.assertIn("cloperator:Up 2 hours", output)
+        self.assertIn("mycontainer:Up 2 hours", output)
 
 
 class TestCmdCat(unittest.TestCase):

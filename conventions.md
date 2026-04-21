@@ -73,4 +73,4 @@ Every sdale command logs an `operator` field. Detection order:
 2. tmux window name
 3. `"unknown"`
 
-This lets the boss window and dashboards track which operator ran what.
+This lets the coordinator window and dashboards track which operator ran what.

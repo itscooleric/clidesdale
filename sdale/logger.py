@@ -50,8 +50,8 @@ def detect_operator() -> str:
     """Detect the current operator identity.
 
     Resolution order:
-        1. ``$CLIDE_OPERATOR`` env var (set by boss when creating windows)
-        2. tmux window name (e.g. ``clem``, ``clide``)
+        1. ``$CLIDE_OPERATOR`` env var (set by coordinator when creating windows)
+        2. tmux window name (e.g. ``myapp``, ``clide``)
         3. ``"unknown"``
 
     Returns:
