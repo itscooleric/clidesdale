@@ -199,7 +199,7 @@ class TestTmuxSendWait(unittest.TestCase):
             if "capture-pane" in cmd_str:
                 # Simulate output with marker
                 return subprocess.CompletedProcess([], 0,
-                    stdout="$ hostname ; echo SDabcd12\nforge-edge\nSDabcd12\n$\n")
+                    stdout="$ hostname ; echo SDabcd12\nmy-vps\nSDabcd12\n$\n")
             return subprocess.CompletedProcess([], 0, stdout="")
 
         mock_run.side_effect = side_effect
@@ -208,7 +208,7 @@ class TestTmuxSendWait(unittest.TestCase):
         with patch("sdale.remote.secrets.token_hex", return_value="abcd12"):
             output = tmux_send_wait(dale, "hostname", timeout=10, interval=0.1)
 
-        self.assertIn("forge-edge", output)
+        self.assertIn("my-vps", output)
 
     @patch("sdale.remote.time.sleep")
     @patch("sdale.remote.time.monotonic")

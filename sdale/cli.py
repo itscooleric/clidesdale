@@ -18,7 +18,12 @@ Usage:
     sdale status [dale]
     sdale list
     sdale log <dale> [--full | --since DURATION]
+    sdale networks <dale> [--compose-dir DIR] [--force-recreate]
+    sdale watchdog [dale] [--reboot --yes]
     sdale disconnect <dale>
+    sdale self                                  # local environment summary
+    sdale self exec "<command>"                 # run command locally
+    sdale self docker                           # list local Docker containers
 """
 
 import argparse
@@ -32,6 +37,14 @@ from pathlib import Path
 from . import __version__
 from .config import DaleConfig, get_dale, list_dales, find_config_path
 from .logger import EventLogger
+from .docker import (
+    add_docker_subparser,
+    cmd_docker_inspect,
+    cmd_docker_logs,
+    cmd_docker_ps,
+    cmd_docker_restart,
+    cmd_docker_stats,
+)
 from .remote import (
     rsync,
     scp_from,
@@ -71,7 +84,7 @@ def _install_watch_script(dale: DaleConfig) -> None:
 
     Idempotent — only writes once.
     """
-    script_path = "/opt/stacks/.sdale-watch"
+    script_path = f"{str(Path(dale.activity_log_path).parent)}/.sdale-watch"
     try:
         result = ssh(dale, f"test -x {script_path} && echo exists || echo missing", capture=True)
         if "exists" in result.stdout:
@@ -137,9 +150,9 @@ def cmd_connect(args: argparse.Namespace) -> None:
     tmux_ensure(dale)
 
     # Initialize the activity log in the shared volume (visible inside containers)
-    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    log_file = dale.activity_log_path
     try:
-        ssh(dale, f"mkdir -p /opt/stacks 2>/dev/null; touch {log_file} && echo '── sdale connected ({dale.name}) ──' >> {log_file}", capture=True)
+        ssh(dale, f"mkdir -p $(dirname '{log_file}') 2>/dev/null; touch '{log_file}' && echo '── sdale connected ({dale.name}) ──' >> '{log_file}'", capture=True)
     except subprocess.CalledProcessError:
         pass
 
@@ -159,13 +172,13 @@ def cmd_watch(args: argparse.Namespace) -> None:
     output. Ctrl-c to stop watching.
     """
     dale = get_dale(args.dale)
-    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    log_file = dale.activity_log_path
 
     info(f"Watching dale '{dale.name}' — Ctrl-c to stop")
     print()
 
     cmd = ["ssh", *dale.ssh_args, "-t", dale.ssh_dest,
-           f"touch {log_file} && tail -f {log_file}"]
+           f"touch '{log_file}' && tail -f '{log_file}'"]
     try:
         os.execvp("ssh", cmd)
     except KeyboardInterrupt:
@@ -323,6 +336,55 @@ def cmd_write(args: argparse.Namespace) -> None:
     info(f"Wrote {size} bytes → {dale.name}:{remote_path}")
 
 
+def cmd_script(args: argparse.Namespace) -> None:
+    """Upload a local script to the dale and run it.
+
+    Copies the script to a temp file on the dale, makes it executable,
+    runs it with the provided arguments, then cleans up. Output streams
+    directly to stdout/stderr.
+
+    Examples::
+
+        sdale script edge ./setup.sh
+        sdale script mesa ./deploy.py --env prod
+        sdale script core ./check.sh arg1 arg2
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    local_script = args.script
+    script_args = args.script_args or []
+
+    if not Path(local_script).is_file():
+        err(f"Script not found: {local_script}")
+        sys.exit(1)
+
+    # Determine interpreter from shebang or extension
+    ext = Path(local_script).suffix
+    remote_tmp = f"/tmp/.sdale-script-{os.getpid()}{ext or '.sh'}"
+
+    # Upload
+    scp_to(dale, local_script, remote_tmp)
+
+    # Make executable and run
+    args_str = " ".join(f"'{a}'" for a in script_args)
+    run_cmd = f"chmod +x '{remote_tmp}' && '{remote_tmp}' {args_str}; _rc=$?; rm -f '{remote_tmp}'; exit $_rc"
+
+    try:
+        result = ssh(dale, run_cmd, capture=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        logger.log("dale_script", script=local_script, exit_code="0")
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
+        logger.log("dale_script", script=local_script, exit_code=str(exc.returncode))
+        sys.exit(exc.returncode)
+
+
 def cmd_logs(args: argparse.Namespace) -> None:
     """View container logs on a dale.
 
@@ -332,8 +394,8 @@ def cmd_logs(args: argparse.Namespace) -> None:
 
     Examples::
 
-        sdale logs edge cloperator
-        sdale logs edge clem --tail 100
+        sdale logs edge mycontainer
+        sdale logs edge myapp --tail 100
         sdale logs core homeassistant --since 1h
         sdale logs edge clide-web-1 --follow
     """
@@ -735,9 +797,9 @@ def cmd_probe(args: argparse.Namespace) -> None:
     Examples::
 
         sdale probe edge                          # overview
-        sdale probe edge --dns git.lan.wubi.sh    # resolve hostname
+        sdale probe edge --dns git.example.com     # resolve hostname
         sdale probe edge --ping 8.8.8.8           # connectivity test
-        sdale probe edge --reach hub.edge.wubi.sh # HTTP reachability
+        sdale probe edge --reach hub.example.com  # HTTP reachability
         sdale probe edge --ports 80,443,7681      # check listening ports
     """
     dale = get_dale(args.dale)
@@ -1001,10 +1063,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     command = args.command
 
     # Log to activity file so watchers see run commands too
-    log_file = f"/opt/stacks/.sdale-{dale.name}.log"
+    log_file = dale.activity_log_path
     safe = command.replace("'", "'\\''")[:200]
     try:
-        ssh(dale, f"echo '\\n── '$(date +\"%H:%M:%S\")' ── [run] $ {safe}' >> {log_file}", capture=True)
+        ssh(dale, f"echo '\\n── '$(date +\"%H:%M:%S\")' ── [run] $ {safe}' >> '{log_file}'", capture=True)
     except subprocess.CalledProcessError:
         pass
 
@@ -1136,6 +1198,44 @@ def cmd_log(args: argparse.Namespace) -> None:
             print(line)
 
 
+def cmd_networks(args: argparse.Namespace) -> None:
+    """Reconnect Docker containers to their networks after a compose restart.
+
+    Runs ``docker compose up -d`` in the compose directory on the dale,
+    which reconciles container state (including network attachments) with
+    the compose file.  Use ``--force-recreate`` to force-recreate all
+    containers even if their configuration hasn't changed.
+    """
+    dale = get_dale(args.dale)
+    logger = EventLogger(dale.name)
+    compose_dir = getattr(args, "compose_dir", "/opt/stacks/clide")
+
+    cmd_parts = [f"cd {compose_dir}", "docker compose up -d"]
+    if getattr(args, "force_recreate", False):
+        cmd_parts[-1] += " --force-recreate"
+    remote_cmd = " && ".join(cmd_parts)
+
+    info(f"Reconnecting containers on '{dale.name}' (compose dir: {compose_dir})")
+    try:
+        result = ssh(dale, remote_cmd, capture=True, log=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            # docker compose up prints progress to stderr normally
+            print(result.stderr, end="")
+        logger.log("dale_networks", compose_dir=compose_dir, exit_code="0")
+        info("Network reconnection complete")
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
+        logger.log("dale_networks", compose_dir=compose_dir,
+                    exit_code=str(exc.returncode))
+        err(f"docker compose up failed (exit {exc.returncode})")
+        sys.exit(exc.returncode)
+
+
 def cmd_disconnect(args: argparse.Namespace) -> None:
     """Kill the tmux session on a dale."""
     dale = get_dale(args.dale)
@@ -1181,6 +1281,433 @@ def _parse_since(duration: str) -> datetime:
         return now - timedelta(days=amount)
     else:
         raise ValueError(f"Unknown duration unit '{unit}'. Use m, h, or d")
+
+
+# ── Local execution (sdale self) ─────────────────────────────────────
+
+
+def _local_run(command: str, capture: bool = True) -> subprocess.CompletedProcess:
+    """Run a command locally via subprocess (no SSH).
+
+    Args:
+        command: Shell command string to execute.
+        capture: If True, capture stdout/stderr.
+
+    Returns:
+        CompletedProcess result.
+    """
+    return subprocess.run(
+        command, shell=True, capture_output=capture, text=True,
+    )
+
+
+def cmd_self(args: argparse.Namespace) -> None:
+    """Inspect the local host environment without SSH.
+
+    Runs introspection commands locally, giving the agent a quick
+    summary of its own container/host. Supports three modes:
+
+      sdale self              — print environment summary
+      sdale self exec "cmd"   — run an arbitrary local command
+      sdale self docker       — list local Docker containers
+
+    No dale config is needed — everything runs via subprocess.
+    """
+    action = getattr(args, "action", None)
+
+    # ── sdale self exec "<command>" ──────────────────────────────────
+    if action == "exec":
+        command = args.command
+        result = _local_run(command)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    # ── sdale self docker ────────────────────────────────────────────
+    if action == "docker":
+        result = _local_run("docker ps --format '{{.Names}}: {{.Status}}' 2>/dev/null")
+        if result.returncode != 0 or not result.stdout.strip():
+            info("Docker not available or no containers running")
+        else:
+            info("Docker containers:")
+            print(result.stdout, end="")
+        return
+
+    # ── sdale self (default summary) ─────────────────────────────────
+    sections: list[tuple[str, str]] = []
+
+    # Hostname
+    r = _local_run("hostname")
+    sections.append(("Hostname", r.stdout.strip() if r.returncode == 0 else "unknown"))
+
+    # OS / kernel
+    r = _local_run("uname -a")
+    sections.append(("OS", r.stdout.strip() if r.returncode == 0 else "unknown"))
+
+    # Uptime
+    r = _local_run("uptime -p 2>/dev/null || uptime")
+    sections.append(("Uptime", r.stdout.strip() if r.returncode == 0 else "unknown"))
+
+    # Disk
+    r = _local_run("df -h /")
+    if r.returncode == 0:
+        sections.append(("Disk (/)", r.stdout.strip()))
+
+    # Memory
+    r = _local_run("free -m 2>/dev/null")
+    if r.returncode == 0 and r.stdout.strip():
+        sections.append(("Memory", r.stdout.strip()))
+
+    # Docker containers
+    r = _local_run("docker ps --format '{{.Names}}: {{.Status}}' 2>/dev/null")
+    if r.returncode == 0 and r.stdout.strip():
+        sections.append(("Docker", r.stdout.strip()))
+    else:
+        sections.append(("Docker", "not available"))
+
+    # Network
+    r = _local_run("ip -br addr 2>/dev/null || hostname -I 2>/dev/null")
+    if r.returncode == 0 and r.stdout.strip():
+        sections.append(("Network", r.stdout.strip()))
+
+    # User / UID
+    r = _local_run("id")
+    if r.returncode == 0:
+        sections.append(("User", r.stdout.strip()))
+
+    # Python version
+    r = _local_run("python3 --version 2>/dev/null || python --version 2>/dev/null")
+    if r.returncode == 0:
+        sections.append(("Python", r.stdout.strip()))
+
+    # Key env vars
+    env_keys = ["OPERATOR_NAME", "IRC_NICK", "FIELD_NAME"]
+    env_vals = []
+    for key in env_keys:
+        val = os.environ.get(key)
+        if val:
+            env_vals.append(f"{key}={val}")
+    if env_vals:
+        sections.append(("Env", ", ".join(env_vals)))
+
+    # Print
+    info("Local environment summary")
+    print()
+    for label, value in sections:
+        if "\n" in value:
+            print(f"  {label}:")
+            for line in value.splitlines():
+                print(f"    {line}")
+        else:
+            print(f"  {label}: {value}")
+    print()
+
+
+# ── Watchdog ────────────────────────────────────────────────────────
+
+
+def _check_dale_health(dale: DaleConfig) -> dict:
+    """Run health checks on a single dale via SSH.
+
+    Collects uptime, disk usage, memory, docker status, and load average
+    in a single SSH round-trip. Returns a dict with structured results.
+
+    Args:
+        dale: The dale configuration to check.
+
+    Returns:
+        A dict with keys: name, status, uptime, disk, memory, docker, load.
+        If SSH fails, status is "UNREACHABLE" and other fields are "n/a".
+    """
+    import time as _time
+
+    result_data = {
+        "name": dale.name,
+        "status": "OK",
+        "uptime": "n/a",
+        "disk": "n/a",
+        "memory": "n/a",
+        "docker": "n/a",
+        "load": "n/a",
+        "latency_ms": 0,
+    }
+
+    health_cmd = "; ".join([
+        "echo UPTIME_START",
+        "uptime",
+        "echo UPTIME_END",
+        "echo DISK_START",
+        "df -h /",
+        "echo DISK_END",
+        "echo MEM_START",
+        "free -m | head -2",
+        "echo MEM_END",
+        "echo DOCKER_START",
+        "docker ps --format '{{.Names}}: {{.Status}}' 2>/dev/null || echo 'no docker'",
+        "echo DOCKER_END",
+    ])
+
+    t0 = _time.monotonic()
+    try:
+        res = ssh(dale, health_cmd, capture=True)
+        result_data["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+    except (subprocess.CalledProcessError, Exception):
+        result_data["status"] = "UNREACHABLE"
+        return result_data
+
+    output = res.stdout or ""
+    lines = output.splitlines()
+
+    # Parse sections
+    section = None
+    sections: dict[str, list[str]] = {
+        "uptime": [], "disk": [], "mem": [], "docker": [],
+    }
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "UPTIME_START":
+            section = "uptime"
+            continue
+        elif stripped == "UPTIME_END":
+            section = None
+            continue
+        elif stripped == "DISK_START":
+            section = "disk"
+            continue
+        elif stripped == "DISK_END":
+            section = None
+            continue
+        elif stripped == "MEM_START":
+            section = "mem"
+            continue
+        elif stripped == "MEM_END":
+            section = None
+            continue
+        elif stripped == "DOCKER_START":
+            section = "docker"
+            continue
+        elif stripped == "DOCKER_END":
+            section = None
+            continue
+        if section and stripped:
+            sections[section].append(stripped)
+
+    # Extract uptime + load
+    if sections["uptime"]:
+        uptime_line = sections["uptime"][0]
+        result_data["uptime"] = uptime_line
+        # Load average is at end of uptime output: "load average: 0.1, 0.2, 0.3"
+        if "load average:" in uptime_line:
+            load_part = uptime_line.split("load average:")[-1].strip()
+            result_data["load"] = load_part
+
+    # Disk
+    if sections["disk"]:
+        result_data["disk"] = "\n".join(sections["disk"])
+
+    # Memory
+    if sections["mem"]:
+        result_data["memory"] = "\n".join(sections["mem"])
+
+    # Docker
+    if sections["docker"]:
+        result_data["docker"] = "\n".join(sections["docker"])
+
+    return result_data
+
+
+def _print_dale_health(health: dict) -> None:
+    """Print a formatted health report for a single dale.
+
+    Args:
+        health: The health dict returned by _check_dale_health().
+    """
+    name = health["name"]
+    status = health["status"]
+
+    if status == "UNREACHABLE":
+        print(f"\n{'=' * 60}")
+        print(f"  {name:20s}  [UNREACHABLE]")
+        print(f"{'=' * 60}")
+        print("  Could not connect via SSH.")
+        return
+
+    latency = health["latency_ms"]
+    print(f"\n{'=' * 60}")
+    print(f"  {name:20s}  [OK] (SSH: {latency}ms)")
+    print(f"{'=' * 60}")
+
+    print(f"\n  Uptime / Load:")
+    print(f"    {health['uptime']}")
+
+    print(f"\n  Disk Usage:")
+    for line in health["disk"].splitlines():
+        print(f"    {line}")
+
+    print(f"\n  Memory:")
+    for line in health["memory"].splitlines():
+        print(f"    {line}")
+
+    print(f"\n  Docker:")
+    for line in health["docker"].splitlines():
+        print(f"    {line}")
+
+    print()
+
+
+def cmd_watchdog(args: argparse.Namespace) -> None:
+    """Check health of one or all dales, with optional reboot.
+
+    When called without a dale name, checks all configured dales and
+    prints a health summary for each. When called with a dale name,
+    checks that single dale. With --reboot --yes, reboots the dale
+    via ``sudo reboot``.
+    """
+    # Handle reboot case first
+    if getattr(args, "reboot", False):
+        if not args.dale:
+            err("--reboot requires a dale name")
+            sys.exit(1)
+        if not getattr(args, "yes", False):
+            err("--reboot requires --yes flag to confirm (e.g. sdale watchdog edge --reboot --yes)")
+            sys.exit(1)
+        dale = get_dale(args.dale)
+        print(f"WARNING: Rebooting {dale.name} ({dale.host})...")
+        try:
+            ssh(dale, "sudo reboot", capture=True)
+        except subprocess.CalledProcessError:
+            # reboot often kills the SSH connection mid-command, which is expected
+            pass
+        info(f"{dale.name} reboot command sent.")
+        return
+
+    # Health check mode
+    if args.dale:
+        # Single dale
+        dale = get_dale(args.dale)
+        health = _check_dale_health(dale)
+        _print_dale_health(health)
+    else:
+        # All dales
+        dales_map = list_dales()
+        if not dales_map:
+            err("No dales configured in sdale.json")
+            sys.exit(1)
+
+        print(f"\nChecking {len(dales_map)} dale(s)...")
+        summary = []
+        for name in sorted(dales_map.keys()):
+            try:
+                dale = get_dale(name)
+            except (KeyError, ValueError) as exc:
+                print(f"\n  {name}: config error -- {exc}")
+                summary.append((name, "CONFIG_ERROR"))
+                continue
+            health = _check_dale_health(dale)
+            _print_dale_health(health)
+            summary.append((name, health["status"]))
+
+        # Print summary table
+        print(f"\n{'=' * 60}")
+        print("  SUMMARY")
+        print(f"{'=' * 60}")
+        for name, status in summary:
+            icon = "\u2705" if status == "OK" else "\u274C"
+            print(f"  {icon}  {name:20s}  {status}")
+        print()
+
+
+# ── Mode management ──────────────────────────────────────────────────
+
+
+def _detect_mode(dale: DaleConfig) -> str:
+    """Auto-detect the appropriate mode based on the owner's presence.
+
+    The owner identity is read from $SDALE_OWNER (default: "owner").
+
+    Detection order:
+      1. Owner attached to tmux session → unrestricted
+      2. Owner detached but Tailscale connected → supervised
+      3. Owner offline (Tailscale disconnected) → locked
+    """
+    owner = os.environ.get("SDALE_OWNER", "owner").lower()
+    try:
+        # Check tmux client attachment
+        result = ssh(dale, f"tmux list-clients -t {dale.session} 2>/dev/null || true",
+                     capture=True)
+        if result.stdout and owner in result.stdout.lower():
+            return "unrestricted"
+    except (subprocess.CalledProcessError, Exception):
+        pass
+
+    try:
+        # Check Tailscale peer status for owner's devices
+        result = ssh(dale, "tailscale status 2>/dev/null | head -20 || true",
+                     capture=True)
+        if result.stdout and "online" in result.stdout.lower():
+            return "supervised"
+    except (subprocess.CalledProcessError, Exception):
+        pass
+
+    return "locked"
+
+
+def _get_mode_file(dale_name: str) -> Path:
+    """Return the path to the mode state file for a dale."""
+    mode_dir = Path.home() / ".config" / "sdale" / "modes"
+    mode_dir.mkdir(parents=True, exist_ok=True)
+    return mode_dir / f"{dale_name}.mode"
+
+
+def _read_mode(dale: DaleConfig) -> str:
+    """Read the current mode for a dale from config or state file.
+
+    Priority: state file > config > default (supervised).
+    """
+    mode_file = _get_mode_file(dale.name)
+    if mode_file.exists():
+        stored = mode_file.read_text().strip()
+        if stored in ("unrestricted", "supervised", "locked"):
+            return stored
+    if dale.mode and dale.mode in ("unrestricted", "supervised", "locked"):
+        return dale.mode
+    return "supervised"
+
+
+def _write_mode(dale_name: str, mode: str) -> None:
+    """Persist the mode for a dale to the state file."""
+    mode_file = _get_mode_file(dale_name)
+    mode_file.write_text(mode + "\n")
+
+
+def cmd_mode(args: argparse.Namespace) -> None:
+    """Get or set the operating mode for a dale.
+
+    Modes:
+      unrestricted — full shell access, no staging (owner present)
+      supervised   — draft/approve for mutations (owner reviewing remotely)
+      locked       — read-only, no execution (owner offline)
+      auto         — detect mode from owner's tmux/Tailscale presence
+    """
+    dale = get_dale(args.dale)
+    new_mode = args.new_mode
+
+    if not new_mode:
+        # Display current mode
+        current = _read_mode(dale)
+        print(f"Dale '{dale.name}' mode: {current}")
+        return
+
+    if new_mode == "auto":
+        detected = _detect_mode(dale)
+        _write_mode(dale.name, detected)
+        print(f"Dale '{dale.name}' mode auto-detected: {detected}")
+        return
+
+    _write_mode(dale.name, new_mode)
+    print(f"Dale '{dale.name}' mode set to: {new_mode}")
 
 
 # ── Argument parsing ─────────────────────────────────────────────────
@@ -1239,6 +1766,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("path", help="Remote file path to write")
     p.add_argument("--from", dest="from_file", metavar="FILE",
                     help="Read from local file instead of stdin")
+
+    # script
+    p = sub.add_parser("script", help="Upload and run a local script on a dale")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("script", help="Local script file to upload and run")
+    p.add_argument("script_args", nargs="*", help="Arguments to pass to the script")
 
     # logs
     p = sub.add_parser("logs", help="View container logs on a dale")
@@ -1306,9 +1839,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Show full log")
     p.add_argument("--since", metavar="DUR", help="Filter by duration (e.g. 1h, 30m, 2d)")
 
+    # networks
+    p = sub.add_parser("networks", help="Reconnect containers to networks after compose restart")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("--compose-dir", default="/opt/stacks/clide",
+                    help="Compose directory on the dale (default: /opt/stacks/clide)")
+    p.add_argument("--force-recreate", action="store_true",
+                    help="Force-recreate all containers")
+
     # disconnect
     p = sub.add_parser("disconnect", help="Kill tmux session on a dale")
     p.add_argument("dale", help="Dale name from sdale.json")
+
+    # watchdog
+    p = sub.add_parser("watchdog", help="VPS health monitor + reboot command")
+    p.add_argument("dale", nargs="?", default="", help="Dale name (omit to check all)")
+    p.add_argument("--reboot", action="store_true", help="Reboot the dale (requires --yes)")
+    p.add_argument("--yes", action="store_true", help="Confirm reboot (required with --reboot)")
+
+    # self — local introspection (no SSH, no dale config)
+    p_self = sub.add_parser("self", help="Inspect local host (no SSH needed)")
+    self_sub = p_self.add_subparsers(dest="action")
+    p_self_exec = self_sub.add_parser("exec", help="Run a command locally")
+    p_self_exec.add_argument("command", help="Command to run (quote it)")
+    self_sub.add_parser("docker", help="List local Docker containers")
+
+    # mode
+    p = sub.add_parser("mode", help="Get or set operating mode for a dale")
+    p.add_argument("dale", help="Dale name from sdale.json")
+    p.add_argument("new_mode", nargs="?", default="",
+                    choices=["unrestricted", "supervised", "locked", "auto", ""],
+                    help="Mode to set (unrestricted/supervised/locked/auto)")
+
+    # docker (subcommand group)
+    add_docker_subparser(sub)
 
     return parser
 
@@ -1338,6 +1902,7 @@ def main() -> None:
         "pull": cmd_pull,
         "cat": cmd_cat,
         "write": cmd_write,
+        "script": cmd_script,
         "logs": cmd_logs,
         "multi": cmd_multi,
         "info": cmd_info,
@@ -1349,8 +1914,50 @@ def main() -> None:
         "status": cmd_status,
         "list": cmd_list,
         "log": cmd_log,
+        "networks": cmd_networks,
         "disconnect": cmd_disconnect,
+        "watchdog": cmd_watchdog,
+        "self": cmd_self,
+        "mode": cmd_mode,
     }
+
+    # Docker subcommand group — needs special dispatch
+    if args.subcmd == "docker":
+        docker_commands = {
+            "ps": cmd_docker_ps,
+            "logs": cmd_docker_logs,
+            "inspect": cmd_docker_inspect,
+            "stats": cmd_docker_stats,
+            "restart": cmd_docker_restart,
+        }
+        docker_cmd = getattr(args, "docker_cmd", None)
+        if not docker_cmd:
+            # Print docker subcommand help
+            for action in parser._subparsers._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    docker_parser = action.choices.get("docker")
+                    if docker_parser:
+                        docker_parser.print_help()
+                        break
+            sys.exit(0)
+        docker_handler = docker_commands.get(docker_cmd)
+        if docker_handler is None:
+            sys.exit(1)
+        dale = get_dale(args.dale)
+        try:
+            docker_handler(args, dale)
+        except subprocess.CalledProcessError as exc:
+            cmd_name = Path(exc.cmd[0]).name if exc.cmd else "command"
+            if cmd_name == "ssh":
+                err(f"SSH connection failed (exit {exc.returncode}). Is the dale reachable?")
+                if exc.stderr:
+                    err(exc.stderr.strip())
+            else:
+                err(f"{cmd_name} failed (exit {exc.returncode})")
+            sys.exit(exc.returncode)
+        except KeyboardInterrupt:
+            sys.exit(130)
+        return
 
     handler = commands.get(args.subcmd)
     if handler is None:

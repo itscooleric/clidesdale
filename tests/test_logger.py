@@ -53,10 +53,10 @@ class TestScrubSecrets(unittest.TestCase):
 class TestDetectOperator(unittest.TestCase):
     """Tests for operator identity detection."""
 
-    @patch.dict(os.environ, {"CLIDE_OPERATOR": "clem"})
+    @patch.dict(os.environ, {"CLIDE_OPERATOR": "myapp"})
     def test_env_var_takes_priority(self) -> None:
         """CLIDE_OPERATOR env var is used first."""
-        self.assertEqual(detect_operator(), "clem")
+        self.assertEqual(detect_operator(), "myapp")
 
     @patch.dict(os.environ, {"CLIDE_OPERATOR": ""})
     @patch("sdale.logger.subprocess.run")
@@ -73,10 +73,10 @@ class TestDetectOperator(unittest.TestCase):
         """Returns 'unknown' when tmux is not available."""
         self.assertEqual(detect_operator(), "unknown")
 
-    @patch.dict(os.environ, {"CLIDE_OPERATOR": "  hale  "})
+    @patch.dict(os.environ, {"CLIDE_OPERATOR": "  webapp  "})
     def test_env_var_stripped(self) -> None:
         """CLIDE_OPERATOR is stripped of whitespace."""
-        self.assertEqual(detect_operator(), "hale")
+        self.assertEqual(detect_operator(), "webapp")
 
 
 class TestEventLogger(unittest.TestCase):

@@ -4,7 +4,15 @@
       "host": "203.0.113.10",
       "user": "deploy",
       "key": "~/.ssh/sdale",
-      "session": "work"
+      "session": "work",
+      "docker_user": "docker-ops",
+      "docker_blacklist": ["critical-db", "vault"],
+      "allowed_operators": ["alice", "bob", "charlie", "dave"],
+      "operator_tiers": {
+        "full": ["alice", "bob"],
+        "readonly": ["charlie", "dave"]
+      },
+      "mode": "supervised"
     }
   },
   "defaults": {

@@ -51,11 +51,11 @@ class TestBuildParser(unittest.TestCase):
 
     def test_push_subcommand(self) -> None:
         """'push' subcommand parses dale, src, and dst."""
-        args = self.parser.parse_args(["push", "edge", ".env", "/opt/stacks/clem/.env"])
+        args = self.parser.parse_args(["push", "edge", ".env", "/opt/stacks/myapp/.env"])
         self.assertEqual(args.subcmd, "push")
         self.assertEqual(args.dale, "edge")
         self.assertEqual(args.src, ".env")
-        self.assertEqual(args.dst, "/opt/stacks/clem/.env")
+        self.assertEqual(args.dst, "/opt/stacks/myapp/.env")
 
     def test_run_subcommand(self) -> None:
         """'run' subcommand parses dale name and command."""
@@ -350,16 +350,16 @@ class TestLogsSubcommand(unittest.TestCase):
 
     def test_logs_parses_container(self) -> None:
         """'logs' parses dale and container name."""
-        args = self.parser.parse_args(["logs", "edge", "cloperator"])
+        args = self.parser.parse_args(["logs", "edge", "mycontainer"])
         self.assertEqual(args.subcmd, "logs")
         self.assertEqual(args.dale, "edge")
-        self.assertEqual(args.container, "cloperator")
+        self.assertEqual(args.container, "mycontainer")
         self.assertEqual(args.tail, 50)
         self.assertFalse(args.follow)
 
     def test_logs_with_options(self) -> None:
         """'logs' parses --tail, --since, --follow."""
-        args = self.parser.parse_args(["logs", "edge", "clem", "-n", "100", "--since", "1h", "-f"])
+        args = self.parser.parse_args(["logs", "edge", "myapp", "-n", "100", "--since", "1h", "-f"])
         self.assertEqual(args.tail, 100)
         self.assertEqual(args.since, "1h")
         self.assertTrue(args.follow)
@@ -420,12 +420,12 @@ class TestInfoSubcommand(unittest.TestCase):
         mock_get.return_value = dale_mock
         mock_ssh.return_value = subprocess.CompletedProcess(
             [], 0, stdout=(
-                "HOSTNAME=forge-edge\nKERNEL=6.1.0\nOS=Ubuntu 24.04\nARCH=x86_64\n"
+                "HOSTNAME=my-vps\nKERNEL=6.1.0\nOS=Ubuntu 24.04\nARCH=x86_64\n"
                 "UPTIME=up 3 days\nLOAD=0.05 0.03 0.01\nCPUS=2\nCPU_MODEL=Xeon\n"
                 "MEM_TOTAL=4096\nMEM_USED=1024\nMEM_AVAIL=2800\n"
                 "SWAP_TOTAL=0\nSWAP_USED=0\n"
                 "DISK_INFO_START\n/  50G  8G  40G  16%\nDISK_INFO_END\n"
-                "TAILSCALE_IP=100.95.91.31\nTAILSCALE_STATUS=true\n"
+                "TAILSCALE_IP=198.51.100.10\nTAILSCALE_STATUS=true\n"
             )
         )
         args = MagicMock()
@@ -439,7 +439,7 @@ class TestInfoSubcommand(unittest.TestCase):
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
             cmd_info(args)
             output = mock_out.getvalue()
-        self.assertIn("forge-edge", output)
+        self.assertIn("my-vps", output)
         self.assertIn("1024MB / 4096MB", output)
 
     @patch("sdale.cli.EventLogger")
@@ -455,7 +455,7 @@ class TestInfoSubcommand(unittest.TestCase):
                           "UPTIME=up 1 day\nLOAD=0.1\nCPUS=2\nCPU_MODEL=Xeon\n"
                           "MEM_TOTAL=4096\nMEM_USED=1024\nMEM_AVAIL=2800\n"
                           "SWAP_TOTAL=0\nSWAP_USED=0\n"
-                          "TAILSCALE_IP=100.1.2.3\nTAILSCALE_STATUS=true\n"
+                          "TAILSCALE_IP=198.51.100.20\nTAILSCALE_STATUS=true\n"
         )
         args = MagicMock()
         args.dale = "edge"
@@ -529,12 +529,12 @@ class TestProbeSubcommand(unittest.TestCase):
                 "DNS_END\n"
                 "IP_START\n"
                 "ens6 10.0.0.5/24\n"
-                "tailscale0 100.95.91.31/32\n"
+                "tailscale0 198.51.100.10/32\n"
                 "IP_END\n"
                 "ROUTE=default via 10.0.0.1 dev ens6\n"
                 "GW=10.0.0.1\n"
                 "GW_PING=ok\n"
-                "TS_IP=100.95.91.31\n"
+                "TS_IP=198.51.100.10\n"
                 "TS_STATUS=true\n"
                 "PUB_IP=66.179.138.11\n"
                 "INET_CHECK=200\n"
@@ -553,7 +553,7 @@ class TestProbeSubcommand(unittest.TestCase):
             output = mock_out.getvalue()
 
         self.assertIn("edge", output)
-        self.assertIn("100.95.91.31", output)
+        self.assertIn("198.51.100.10", output)
         self.assertIn("10.0.0.1", output)
         self.assertIn("200", output)
 
@@ -818,7 +818,7 @@ class TestCmdHealth(unittest.TestCase):
             subprocess.CompletedProcess([], 0, stdout="ok\n"),
             subprocess.CompletedProcess([], 0, stdout=(
                 "LOAD=0.1\nDISK=30%\nUP=up 5d\ntmux:yes\n"
-                "DOCKER_START\nclide:Up 2 hours\ncloperator:Up 2 hours\nDOCKER_END\n"
+                "DOCKER_START\nclide:Up 2 hours\nmycontainer:Up 2 hours\nDOCKER_END\n"
             )),
         ]
 
@@ -832,7 +832,7 @@ class TestCmdHealth(unittest.TestCase):
         output = mock_out.getvalue()
         self.assertIn("Containers (2)", output)
         self.assertIn("clide:Up 2 hours", output)
-        self.assertIn("cloperator:Up 2 hours", output)
+        self.assertIn("mycontainer:Up 2 hours", output)
 
 
 class TestCmdCat(unittest.TestCase):

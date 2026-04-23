@@ -26,13 +26,13 @@
   python 3.10+  ·  zero dependencies  ·  dale! 🐴
 ```
 
-Give your AI agent SSH access to a disposable VPS. It builds, tests, deploys, and breaks things — you watch via activity logs. Dale!
+Give your AI agent SSH access to a disposable VPS — and capture structured behavioral data about every interaction. Clidesdale is both an operations tool and a research instrument: it lets agents build, test, and deploy on real infrastructure while producing a complete JSONL audit trail of what they did, when, and under what constraints.
 
-## Why
+## Why this matters for research
 
-AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/clide)) can't run Docker, bind ports, or test infrastructure. But you don't want to give them the keys to production either.
+AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/clide)) can't run Docker, bind ports, or test infrastructure. Clidesdale gives them a real VPS to work with — and turns every SSH session into a data collection opportunity.
 
-**clidesdale** is the middle ground: a throwaway VPS the agent can SSH into and go a little crazy on. You co-pilot via activity logs and shared tmux sessions — observable, interruptible, disposable.
+Every `sdale` command produces structured event data: what the agent ran, the exit code, which operator initiated it, the operating mode at the time, and the full output. The SSH boundary is a natural observation point — all agent-infrastructure interaction passes through it, making the data complete by construction.
 
 ## The pattern
 
@@ -45,18 +45,81 @@ AI agents in sandboxed containers (like [clide](https://github.com/itscooleric/c
 │  unit tests   │  sdale sync ────────> │  deploy          │
 │  git          │  <──── results ────── │  break stuff     │
 └───────────────┘                       └──────────────────┘
-        │                                       │
-        │          activity logs (.sdale-*.log)  │
+        │               ▲                       │
+        │               │ structured JSONL       │
+        │               │ + activity logs        │
+        │               │                       │
         └──────── sdale watch / clidestable ─────┘
                   human watches in real time
 ```
 
-### Core rules
+The SSH boundary is the observation point. Everything crossing it — commands, file transfers, mode transitions — is logged as structured events. The VPS is disposable; the data is not.
 
-1. **Everything is logged** — `sdale exec` and `sdale run` log all commands + output to activity files. The human can `sdale watch` or use [clidestable](https://github.com/itscooleric/clidestable) to see everything in real time.
-2. **Rsync, don't clone** — code lives in the agent's sandbox. Sync it to the VPS for builds. Single source of truth.
-3. **The VPS is disposable** — if the agent bricks it, reprovision. Keep provisioning scripted and repeatable.
-4. **SSH key per agent** — each agent gets its own key pair. Revoke by removing the pubkey.
+## Data & behavioral logging
+
+Clidesdale produces two complementary data streams for every dale.
+
+### Activity logs (human-readable)
+
+Every `sdale exec` and `sdale run` appends commands and their output to a per-dale activity file on the remote host:
+
+```
+/opt/stacks/.sdale-<dale-name>.log
+```
+
+Watch in real time with `sdale watch <dale>` or from the [clidestable](https://github.com/itscooleric/clidestable) dashboard.
+
+### JSONL audit log (structured)
+
+Every interaction is also recorded as a structured event at:
+
+```
+~/.sdale/logs/<dale>/events.jsonl
+```
+
+Each line is a JSON object following the [clide session event schema v1](https://github.com/itscooleric/clide/blob/main/docs/schema/session-events-v1.md):
+
+```json
+{"event":"dale_exec","ts":"2026-03-15T04:30:12Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","operator":"amber","command":"docker build -t app .","exit_code":"0"}
+{"event":"dale_push","ts":"2026-03-15T04:31:02Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","operator":"amber","src":".env","dst":"/srv/app/.env"}
+{"event":"dale_mode","ts":"2026-03-15T04:35:00Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","operator":"amber","mode":"supervised"}
+```
+
+**Fields captured per event:**
+
+| Field | Description |
+|-------|-------------|
+| `event` | Event type (`dale_exec`, `dale_run`, `dale_push`, `dale_connect`, `dale_mode`, ...) |
+| `ts` | UTC timestamp (ISO 8601) |
+| `session_id` | Unique session identifier (`sdale-<dale>-<epoch>`) |
+| `schema_version` | Schema version (currently `1`) |
+| `dale` | Target dale name |
+| `operator` | Who initiated the action (detected from `$CLIDE_OPERATOR` or tmux window name) |
+| `command` | The command string (for exec/run events) |
+| `exit_code` | Process exit code (for exec events) |
+| `mode` | Operating mode at time of event |
+
+**Secret scrubbing** is automatic — values from known secret environment variables (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`, etc.) are replaced with `[REDACTED:<VAR_NAME>]` before any event is written to disk.
+
+### Operating modes as experimental conditions
+
+Clidesdale supports three operating modes per dale, creating natural experimental conditions for studying agent behavior under different autonomy levels:
+
+| Mode | Behavior | Research lens |
+|------|----------|---------------|
+| `unrestricted` | Full shell access, no staging | Agent has complete autonomy — baseline capability measurement |
+| `supervised` | Draft/approve cycle for mutations | Human-in-the-loop — how does oversight change agent strategy? |
+| `locked` | Read-only, no execution | Observation only — what does the agent attempt when it cannot act? |
+
+Modes can be set manually or auto-detected based on the owner's presence:
+
+```bash
+sdale mode edge                  # show current mode
+sdale mode edge supervised       # set explicitly
+sdale mode edge auto             # auto-detect from owner presence
+```
+
+Auto-detection logic: owner attached to tmux = `unrestricted`, owner on Tailscale but detached = `supervised`, owner offline = `locked`. Mode transitions are logged as `dale_mode` events in the JSONL audit trail.
 
 ## Install
 
@@ -66,7 +129,7 @@ pip install .
 python -m sdale
 ```
 
-Requires Python 3.10+. Zero external dependencies — stdlib only.
+Python 3.10+. Zero external dependencies — stdlib only.
 
 ## Quick start
 
@@ -77,17 +140,10 @@ Any cheap VPS works. Install Docker and tmux:
 apt-get update && apt-get install -y docker.io tmux
 ```
 
-Or use a full bootstrap like [forge](https://github.com/itscooleric/forge) for Docker CE, Tailscale, UFW, and SSH hardening.
-
 ### 2. Generate + install SSH key
 
-On the agent's machine:
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/sdale -N "" -C "agent-sdale"
-```
-
-Add the pubkey to the VPS:
-```bash
 ssh-copy-id -i ~/.ssh/sdale.pub deploy@vps-ip
 ```
 
@@ -100,7 +156,8 @@ ssh-copy-id -i ~/.ssh/sdale.pub deploy@vps-ip
       "host": "203.0.113.10",
       "user": "deploy",
       "key": "~/.ssh/sdale",
-      "session": "build"
+      "session": "build",
+      "mode": "supervised"
     }
   },
   "defaults": {
@@ -115,28 +172,13 @@ See [`sdale.example.json`](sdale.example.json) for the full format.
 ### 4. Dale!
 
 ```bash
-# Connect to a dale (creates tmux session + activity log)
-sdale connect edge
-
-# Run commands directly (captured in activity log)
-sdale exec edge "docker build -t app ."
-sdale exec edge "docker run --rm app npm test"
-
-# Or via tmux (observable + wait for completion)
-sdale run -w edge "make deploy"
-
-# Push a config file
-sdale push edge .env /srv/app/.env
-
-# Sync code to the dale
-sdale sync edge ./my-project /srv/app
-
-# Watch agent activity in real time
-sdale watch edge
-
-# Check status / view audit log
-sdale status edge
-sdale log edge
+sdale connect edge                          # tmux session + activity log
+sdale exec edge "docker build -t app ."     # run command, log everything
+sdale run -w edge "make deploy"             # via tmux, wait for result
+sdale push edge .env /srv/app/.env          # push a file
+sdale sync edge ./my-project /srv/app       # rsync code
+sdale watch edge                            # watch activity in real time
+sdale log edge                              # view structured audit log
 ```
 
 ## CLI reference
@@ -144,57 +186,42 @@ sdale log edge
 | Command | Description |
 |---------|-------------|
 | `sdale connect <dale>` | Create/reuse tmux session, set up activity log |
-| `sdale watch <dale>` | Watch agent activity in real time (tails activity log) |
-| `sdale exec <dale> "<cmd>"` | Run command via direct SSH (no tmux, good for scripting) |
-| `sdale exec -e <dale> "<cmd>"` | Same, but merge stderr into stdout (avoids `2>&1`) |
-| `sdale multi <dale> "c1" "c2"` | Run multiple commands in one SSH round-trip |
-| `sdale cat <dale> <path> [path...]` | Read one or more remote files |
-| `sdale health <dale>` | Quick connectivity + system status check |
+| `sdale watch <dale>` | Tail agent activity in real time |
+| `sdale exec <dale> "<cmd>"` | Run command via direct SSH (logged) |
+| `sdale exec -e <dale> "<cmd>"` | Same, merging stderr into stdout |
+| `sdale multi <dale> "c1" "c2"` | Multiple commands in one SSH round-trip |
+| `sdale cat <dale> <path> [path...]` | Read remote files |
+| `sdale health <dale>` | Connectivity + system status check |
 | `sdale health -d <dale>` | Include Docker container listing |
-| `sdale push <dale> <src> <dst>` | Copy a single file to the dale via scp |
-| `sdale pull <dale> <remote> [local]` | Copy a file from the dale to local |
-| `sdale run <dale> "<cmd>"` | Send command to the dale's tmux session (observable) |
-| `sdale run -w <dale> "<cmd>"` | Send via tmux + wait for completion, print output |
-| `sdale output <dale> [-n N]` | Capture recent tmux pane output (default: 20 lines) |
-| `sdale sync <dale> <src> [dst]` | Rsync local directory to the dale |
+| `sdale push <dale> <src> <dst>` | Copy file to the dale (scp) |
+| `sdale pull <dale> <remote> [local]` | Copy file from the dale |
+| `sdale run <dale> "<cmd>"` | Send command to tmux session |
+| `sdale run -w <dale> "<cmd>"` | Send via tmux + wait + print output |
+| `sdale output <dale> [-n N]` | Capture recent tmux pane output |
+| `sdale sync <dale> <src> [dst]` | Rsync local directory to dale |
 | `sdale status [dale]` | Show dale status (or list all) |
 | `sdale list` | List configured dales |
-| `sdale log <dale> [--full\|--since DUR]` | Show event log for a dale |
+| `sdale log <dale> [--full\|--since DUR]` | Show structured event log |
+| `sdale mode <dale> [mode]` | Get or set operating mode |
 | `sdale disconnect <dale>` | Kill the tmux session |
 
-## Observability
+## Core rules
 
-### Activity logs
-`sdale exec` and `sdale run` write all commands and output to activity log files on the dale:
-
-```
-/opt/stacks/.sdale-<dale-name>.log
-```
-
-Watch them in real time with `sdale watch <dale>` or from [clidestable](https://github.com/itscooleric/clidestable)'s web dashboard.
-
-### Audit log (JSONL)
-Every command is also logged as structured JSONL to `~/.sdale/logs/<dale>/events.jsonl`, compatible with the [clide session event schema v1](https://github.com/itscooleric/clide/blob/main/docs/schema/session-events-v1.md).
-
-```json
-{"event":"dale_exec","ts":"2026-03-15T04:30:12Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","command":"docker build -t app .","exit_code":"0"}
-{"event":"dale_push","ts":"2026-03-15T04:31:02Z","session_id":"sdale-edge-1710473400","schema_version":1,"dale":"edge","src":".env","dst":"/srv/app/.env"}
-```
-
-Secret values (API keys, tokens) are automatically scrubbed before writing.
+1. **Everything is logged** — commands, output, file transfers, mode changes. Human-readable activity logs on the dale, structured JSONL locally.
+2. **Rsync, don't clone** — code lives in the agent's sandbox. Sync to the VPS for builds. Single source of truth.
+3. **The VPS is disposable** — if the agent bricks it, reprovision. The data persists locally.
+4. **SSH key per agent** — each agent gets its own ed25519 key pair. Revoke by removing the pubkey.
 
 ## Ecosystem
+
+Clidesdale is part of the CLIDE ecosystem. The JSONL event data it produces feeds into the broader session event pipeline alongside container-level telemetry from clide itself.
 
 | Project | What |
 |---------|------|
 | [clide](https://github.com/itscooleric/clide) | CLI Development Environment — sandboxed terminal for AI agents |
-| **clidesdale** | This CLI — SSH access to remote VPSes for agents |
+| **clidesdale** | SSH access to remote VPSes + structured behavioral logging |
 | [clidestable](https://github.com/itscooleric/clidestable) | VPS-side server — dashboard, stall management, split terminal view |
-
-## Roadmap
-
-See [issues](https://github.com/itscooleric/clidesdale/issues) for the full backlog.
 
 ## Name
 
-**clidesdale** = [clide](https://github.com/itscooleric/clide)'s dale. A horse (Clydesdale → clidesdale). Also Spanish for "dale!" — *go for it!* Because that's what you're telling your agent: here's a VPS, dale. 🐴
+**clidesdale** = [clide](https://github.com/itscooleric/clide)'s dale. A horse (Clydesdale -> clidesdale). Also Spanish for "dale!" — *go for it!* Because that's what you're telling your agent: here's a VPS, dale. 🐴

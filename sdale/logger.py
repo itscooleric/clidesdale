@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Optional
 
 
-# Env vars whose values should be redacted from logs
+# Env vars whose values should be redacted from logs.
+# Extend this list with any project-specific secret env vars.
 SECRET_VARS = [
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -23,11 +24,6 @@ SECRET_VARS = [
     "GITHUB_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GITLAB_TOKEN",
-    "TEDDY_API_KEY",
-    "TEDDY_WEB_PASSWORD",
-    "CLEM_WEB_SECRET",
-    "SUPERVISOR_SECRET",
-    "TTYD_PASS",
 ]
 
 
@@ -54,8 +50,8 @@ def detect_operator() -> str:
     """Detect the current operator identity.
 
     Resolution order:
-        1. ``$CLIDE_OPERATOR`` env var (set by boss when creating windows)
-        2. tmux window name (e.g. ``clem``, ``clide``)
+        1. ``$CLIDE_OPERATOR`` env var (set by coordinator when creating windows)
+        2. tmux window name (e.g. ``myapp``, ``clide``)
         3. ``"unknown"``
 
     Returns:

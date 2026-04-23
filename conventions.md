@@ -43,7 +43,7 @@ sdale output <dale> [-n N]         # read tmux output
 2. **The human can always watch.** Every sdale session uses a named tmux session. The human can `sdale watch <dale>` at any time to see what the agent is doing.
 3. **No invisible remote work.** All commands are logged as JSONL events with operator identity, timestamps, and dale name.
 4. **Never SSH directly.** Use sdale for all remote operations. It handles SSH keys, known hosts, and connection parameters from `sdale.json`.
-5. **Never store secrets on VPSes.** VPSes run untrusted agent code. Private keys, CA material, and signing keys stay on the trust anchor (bernard). VPSes get proxied for TLS.
+5. **Never store secrets on VPSes.** VPSes run untrusted agent code. Private keys, CA material, and signing keys stay on the trust anchor (your primary host). VPSes get proxied for TLS.
 
 ### Config
 
@@ -52,7 +52,7 @@ sdale finds `sdale.json` by walking up directories (like git finds `.git`). Over
 ### Activation
 
 ```bash
-source /workspace/clide-sdale/bin/activate.sh
+source ./bin/activate.sh
 # Now `sdale` is on PATH and PYTHONPATH is set
 ```
 
@@ -62,9 +62,9 @@ A **dale** is a named VPS configuration in `sdale.json`. Common dales:
 
 | Dale | Purpose |
 |------|---------|
-| `edge` | Forge-edge VPS — clide, clem, cloperator development |
-| `edge2` | Same host, separate tmux session — clem development |
-| `core` | Forge-core VPS — HA, llamastable, production services |
+| `my-vps-1` | Primary development VPS |
+| `my-vps-2` | Same host, separate tmux session for another project |
+| `my-vps-3` | Production services VPS |
 
 ### Operator identity
 
@@ -73,4 +73,4 @@ Every sdale command logs an `operator` field. Detection order:
 2. tmux window name
 3. `"unknown"`
 
-This lets the boss window and dashboards track which operator ran what.
+This lets the coordinator window and dashboards track which operator ran what.

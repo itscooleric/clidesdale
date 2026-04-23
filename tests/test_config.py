@@ -78,6 +78,15 @@ class TestDaleConfig(unittest.TestCase):
 class TestFindConfigPath(unittest.TestCase):
     """Tests for find_config_path — config file resolution."""
 
+    def setUp(self) -> None:
+        """Ensure SDALE_CONFIG doesn't leak from the host environment."""
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        self._env_patcher.start()
+        os.environ.pop("SDALE_CONFIG", None)
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
+
     def test_finds_cwd_config(self) -> None:
         """Finds sdale.json in the current working directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,6 +192,15 @@ class TestFindConfigPath(unittest.TestCase):
 class TestLoadConfig(unittest.TestCase):
     """Tests for load_config — JSON parsing."""
 
+    def setUp(self) -> None:
+        """Ensure SDALE_CONFIG doesn't leak from the host environment."""
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        self._env_patcher.start()
+        os.environ.pop("SDALE_CONFIG", None)
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
+
     def test_raises_on_missing_config(self) -> None:
         """Raises FileNotFoundError when no config exists."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -216,6 +234,15 @@ class TestLoadConfig(unittest.TestCase):
 
 class TestGetDale(unittest.TestCase):
     """Tests for get_dale — dale resolution with defaults and overrides."""
+
+    def setUp(self) -> None:
+        """Ensure SDALE_CONFIG doesn't leak from the host environment."""
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        self._env_patcher.start()
+        os.environ.pop("SDALE_CONFIG", None)
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
 
     def _write_config(self, tmpdir: str, config: dict) -> None:
         """Helper to write a config file in the given directory."""
@@ -303,6 +330,15 @@ class TestGetDale(unittest.TestCase):
 
 class TestListDales(unittest.TestCase):
     """Tests for list_dales — listing all configured dales."""
+
+    def setUp(self) -> None:
+        """Ensure SDALE_CONFIG doesn't leak from the host environment."""
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        self._env_patcher.start()
+        os.environ.pop("SDALE_CONFIG", None)
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
 
     def test_lists_all_dales(self) -> None:
         """Returns the raw dales dictionary."""
